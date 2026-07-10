@@ -198,6 +198,23 @@ class SilaboTemDB(Base):
 
 from sqlalchemy import text
 
+class AdmisionDB(Base):
+    __tablename__ = "admisiones"
+    id = Column(Integer, primary_key=True, index=True)
+    codigo_est = Column(String, unique=True, index=True)
+    dni = Column(String)
+    nombres = Column(String)
+    apellidos = Column(String)
+    nivel = Column(String)
+    grado = Column(Integer)
+    promedio = Column(Float)
+    conducta = Column(String)
+    ap_nombre = Column(String)
+    ap_correo = Column(String)
+    ap_telefono = Column(String)
+    estado_proceso = Column(String, default="Pendiente Evaluación")
+    fecha_registro = Column(DateTime, default=datetime.utcnow)
+
 def init_db():
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))

@@ -42,7 +42,7 @@ class RegistroNota(BaseModel):
     codigo_est: str
     curso: str
     nota: float = Field(..., ge=0, le=20)
-    id_docente: str
+    docente_id: Optional[int] = None  # Corregido: era id_docente: str (inconsistente con NotaDB)
 
 class EvaluacionAcademica(BaseModel):
     nota: float
@@ -55,8 +55,7 @@ class EvaluacionResponse(BaseModel):
 class CursoCreate(BaseModel):
     nombre: str
     nivel: Literal["PRIMARIA", "SECUNDARIA"]
-    grado: int
-    seccion: str
+    grados: List[int]
     docente_id: Optional[int] = None
 
 class AsignarDocenteRequest(BaseModel):
@@ -88,7 +87,7 @@ class NotaCreate(BaseModel):
     observacion: Optional[str] = None
 
 class CitaCreate(BaseModel):
-    alumno_id: int
+    alumno_id: Optional[int] = None
     motivo: Literal["Admisión", "Rendimiento"]
     dia: str
     hora: str
@@ -114,14 +113,25 @@ class SilaboCreate(BaseModel):
     grado: int
     curso_nombre: str
     anno_escolar: str = "2025"
-    competencias: Optional[str] = None
-    capacidades: Optional[str] = None
-    desempennos: Optional[str] = None
-    enfoques: Optional[str] = None
+    # Campos legacy (bimestral)
     bimestre_1: Optional[str] = None
     bimestre_2: Optional[str] = None
     bimestre_3: Optional[str] = None
     bimestre_4: Optional[str] = None
+    # Campos del sílabo completo CNEB (generados por IA o cargados manualmente)
+    datos_informativos: Optional[str] = None
+    fundamentacion: Optional[str] = None
+    proposito: Optional[str] = None
+    organizacion_unidades: Optional[str] = None
+    contenidos: Optional[str] = None
+    metodologia: Optional[str] = None
+    bibliografia: Optional[str] = None
+    estandares: Optional[str] = None
+    # Campos transversales
+    competencias: Optional[str] = None
+    capacidades: Optional[str] = None
+    desempennos: Optional[str] = None
+    enfoques: Optional[str] = None
     sistema_evaluacion: Optional[str] = None
     materiales: Optional[str] = None
 

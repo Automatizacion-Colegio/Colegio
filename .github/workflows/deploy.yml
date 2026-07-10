@@ -98,7 +98,7 @@ jobs:
             --set-env-vars GOOGLE_API_KEY_3="${{ secrets.GOOGLE_API_KEY_3 }}" \
             --set-env-vars GOOGLE_API_KEY_4="${{ secrets.GOOGLE_API_KEY_4 }}" \
             --set-env-vars GOOGLE_API_KEY_5="${{ secrets.GOOGLE_API_KEY_5 }}" \
-            --set-env-vars LANGCHAIN_TRACING_V2="true" \
+            --set-env-vars LANGCHAIN_TRACING_V2="${{ secrets.LANGCHAIN_TRACING_V2 }}" \
             --set-env-vars LANGCHAIN_ENDPOINT="https://api.smith.langchain.com" \
             --set-env-vars LANGCHAIN_PROJECT="erp-escolar-ai" \
             --set-env-vars LANGCHAIN_API_KEY="${{ secrets.LANGCHAIN_API_KEY }}" \

@@ -58,7 +58,10 @@ class VocationalRequest(BaseModel):
 router = APIRouter(prefix="/deep-agents", tags=["Deep Agents LangGraph"])
 
 @router.post("/teacher-plan", response_model=TeacherPlanResponse, status_code=status.HTTP_200_OK)
-async def generate_teacher_plan(request: TeacherPlanRequest):
+async def generate_teacher_plan(
+    request: TeacherPlanRequest,
+    current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
+):
     """
     Inicia un flujo LangGraph para crear una sesión de clase.
     Usa el patrón de Crítico-Generador para asegurar el cumplimiento curricular.
@@ -87,7 +90,10 @@ async def generate_teacher_plan(request: TeacherPlanRequest):
         raise HTTPException(status_code=500, detail=f"Error en el flujo LangGraph: {str(e)}")
 
 @router.post("/progress-report", response_model=ProgressReportResponse, status_code=status.HTTP_200_OK)
-async def generate_progress_report(request: ProgressReportRequest):
+async def generate_progress_report(
+    request: ProgressReportRequest,
+    current_user: TokenData = Depends(require_role(["DOCENTE", "PSICOLOGO", "ADMIN"]))
+):
     """
     Genera un informe para padres iterando sobre el tono hasta que el agente
     psicólogo interno apruebe su asertividad y empatía.
@@ -119,7 +125,10 @@ async def generate_progress_report(request: ProgressReportRequest):
 # ========================================================
 
 @router.post("/evaluate-student", response_model=PsychologistAlert, status_code=status.HTTP_200_OK)
-async def evaluate_student_risk(request: PsychologistEvalRequest):
+async def evaluate_student_risk(
+    request: PsychologistEvalRequest,
+    current_user: TokenData = Depends(require_role(["PSICOLOGO", "ADMIN"]))
+):
     """
     Despierta al Agente Psicólogo Proactivo para analizar las notas y conducta de un estudiante.
     Retorna una alerta estructurada con nivel de riesgo (Bajo/Medio/Alto).
@@ -148,7 +157,10 @@ async def evaluate_student_risk(request: PsychologistEvalRequest):
         raise HTTPException(status_code=500, detail=f"Error evaluando al estudiante: {str(e)}")
 
 @router.post("/smart-tutor-match", response_model=TutorMatchResponse, status_code=status.HTTP_200_OK)
-async def smart_tutor_match(request: TutorMatchRequest):
+async def smart_tutor_match(
+    request: TutorMatchRequest,
+    current_user: TokenData = Depends(require_role(["ADMIN"]))
+):
     """
     Ejecuta el Asignador Inteligente (Chain-of-Thought) para emparejar perfiles
     de docentes con las necesidades específicas de cada aula.
@@ -166,7 +178,8 @@ async def smart_tutor_match(request: TutorMatchRequest):
 @router.post("/grade-exam", status_code=status.HTTP_200_OK)
 async def grade_exam(
     rubric: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
     """
     Recibe una imagen (foto/pdf) de un examen, aplica OCR y envía 
@@ -204,7 +217,10 @@ async def grade_exam(
 # ========================================================
 
 @router.post("/bi-query", status_code=status.HTTP_200_OK)
-async def admin_bi_query(request: BIRequest):
+async def admin_bi_query(
+    request: BIRequest,
+    current_user: TokenData = Depends(require_role(["ADMIN"]))
+):
     try:
         response = await run_bi_query(request.question)
         return {"response": response}
@@ -212,7 +228,10 @@ async def admin_bi_query(request: BIRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/generate-exam", status_code=status.HTTP_200_OK)
-async def doc_generate_exam(request: ExamGenRequest):
+async def doc_generate_exam(
+    request: ExamGenRequest,
+    current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
+):
     try:
         response = await generate_exam(request.tema, request.dificultad, request.num_preguntas)
         return {"exam_content": response}
@@ -220,7 +239,10 @@ async def doc_generate_exam(request: ExamGenRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/student-tutor", status_code=status.HTTP_200_OK)
-async def tutor_chat(request: TutorRequest):
+async def tutor_chat(
+    request: TutorRequest,
+    current_user: TokenData = Depends(require_role(["ALUMNO_PADRE", "DOCENTE", "ADMIN"]))
+):
     try:
         response = await ask_tutor(request.pregunta, request.perfil_alumno)
         return {"response": response}
@@ -251,7 +273,8 @@ async def doc_generate_story(
 @router.post("/vocational-advisor", status_code=status.HTTP_200_OK)
 async def vocational_advisor(
     request: VocationalRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role(["ALUMNO_PADRE", "DOCENTE", "ADMIN"]))
 ):
     try:
         from models.database import NotaDB, CursoDB
@@ -275,7 +298,8 @@ async def vocational_advisor(
 @router.post("/justify-absence", status_code=status.HTTP_200_OK)
 async def justify_absence(
     alumno_id: int = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: TokenData = Depends(require_role(["ALUMNO_PADRE", "ADMIN"]))
 ):
     try:
         from core.ocr_engine import extract_text_from_image
@@ -290,6 +314,8 @@ async def justify_absence(
             "dias_reposo": resultado.dias_reposo,
             "resumen": resultado.resumen_diagnostico
         }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Imagen inválida: {str(ve)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

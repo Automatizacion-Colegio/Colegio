@@ -1,5 +1,5 @@
 """
-Memoria Semántica Vectorial con LangChain y ChromaDB.
+Memoria Semántica Vectorial con LangChain y pgvector (PostgreSQL).
 Provee Retrievers avanzados para LangGraph y agentes.
 """
 import os
@@ -58,12 +58,15 @@ class VectorStore:
         store = self.historiales_store if collection_name == "historiales_psicologia" else self.curriculos_store
         return store.as_retriever(search_type=search_type, search_kwargs={"k": k})
 
-    def semantic_search(self, collection_name: str, query: str, n_results: int = 2) -> List[SemanticResult]:
+    def semantic_search(self, collection_name: str, query: str, n_results: int = 2, where: dict = None) -> List[SemanticResult]:
         """Busca documentos por similitud semántica (Compatibilidad Legacy)."""
         store = self.historiales_store if collection_name == "historiales_psicologia" else self.curriculos_store
         
         # Búsqueda con puntuación de relevancia en LangChain
-        docs_with_scores = store.similarity_search_with_score(query, k=n_results)
+        if where:
+            docs_with_scores = store.similarity_search_with_score(query, k=n_results, filter=where)
+        else:
+            docs_with_scores = store.similarity_search_with_score(query, k=n_results)
         
         semantic_results = []
         for doc, score in docs_with_scores:

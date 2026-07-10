@@ -4,7 +4,6 @@
 
 **Plataforma educativa avanzada impulsada por Agentes de Inteligencia Artificial**
 
-[![Build Status](https://github.com/tu-usuario/erp_escolar_ai/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/tu-usuario/erp_escolar_ai/actions)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109.2-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
@@ -120,11 +119,6 @@ Cada request HTTP inyecta un `X-Trace-ID`. Registro (Audit Logs) de inicio de se
 
 ## 🌐 API Endpoints
 
-Una vez en ejecución, la documentación interactiva Swagger se auto-genera y está disponible en:
-```
-http://localhost:8000/docs
-http://localhost:8000/redoc
-```
 
 ### Resumen de Enrutadores principales
 

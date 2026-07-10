@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from swarm import Swarm
 from openai import OpenAI
 from langsmith.wrappers import wrap_openai
-from langchain_core.tracers.context import tracing_v2_enabled as tracing_context
 import contextvars
 
 current_swarm_agent = contextvars.ContextVar("current_swarm_agent", default="unknown")
@@ -366,19 +365,42 @@ class ColegioOrchestrator:
 
     async def procesar_admision(self, expediente: ExpedienteAdmision):
         estado = await self.memory.get_state()
+        codigo_est = self.generar_codigo("EST", len(estado["enrolled_students"]), expediente.nivel)
 
-        if (expediente.conducta == "B" and expediente.promedio < 14) or expediente.conducta == "C":
-            citas_disponibles = [c for c in estado["calendario_psicologia"] if not c["ocupado"]]
-            if not citas_disponibles:
-                raise HTTPException(status_code=400, detail="No hay citas psicológicas disponibles.")
+        from models.database import SessionLocal, AdmisionDB
+        db = SessionLocal()
+        
+        try:
+            # Lógica de admisión automática
+            if (expediente.conducta == "B" and expediente.promedio < 14) or expediente.conducta == "C":
+                estado_proceso = "Requiere Cita Psicológica"
+                mensaje = "Derivado a psicología por riesgo detectado. Por favor, selecciona una cita."
+                status_ret = "requiere_cita"
+            else:
+                estado_proceso = "Admitido (Falta Pago)"
+                monto = 500.0 if "primaria" in expediente.nivel.lower() else 700.0
+                mensaje = f"Admitido por perfil óptimo. Tu cuota de matrícula es de S/ {monto}. Por favor, realiza el pago."
+                status_ret = "admitido"
 
-            return {
-                "status": "requiere_cita",
-                "citas": citas_disponibles,
-                "mensaje": "Derivado a psicología por riesgo detectado. Por favor, selecciona una cita."
-            }
-        else:
-            codigo_est = self.generar_codigo("EST", len(estado["enrolled_students"]), expediente.nivel)
+            # 1. Guardar en PostgreSQL para persistencia e interfaz de Secretaria
+            nueva_admision = AdmisionDB(
+                codigo_est=codigo_est,
+                dni=expediente.dni,
+                nombres=expediente.nombres,
+                apellidos=expediente.apellidos,
+                nivel=expediente.nivel,
+                grado=expediente.grado,
+                promedio=expediente.promedio,
+                conducta=expediente.conducta,
+                ap_nombre=expediente.ap_nombre,
+                ap_correo=expediente.ap_correo,
+                ap_telefono=expediente.ap_telefono,
+                estado_proceso=estado_proceso
+            )
+            db.add(nueva_admision)
+            db.commit()
+
+            # 2. Mantener en JSON memory para compatibilidad con código antiguo
             estado["enrolled_students"][codigo_est] = {
                 "dni": expediente.dni,
                 "nombres": f"{expediente.nombres} {expediente.apellidos}",
@@ -386,11 +408,19 @@ class ColegioOrchestrator:
                 "grado": expediente.grado,
                 "apoderado": expediente.ap_nombre,
                 "ap_correo": expediente.ap_correo,
-                "estado_proceso": "Admitido (Falta Pago)"
+                "estado_proceso": estado_proceso
             }
             await self.memory.set_state(estado)
-            monto = 500.0 if "primaria" in expediente.nivel.lower() else 700.0
-            return {"status": "admitido", "codigo_est": codigo_est, "mensaje": f"Admitido por perfil óptimo. Tu cuota de matrícula es de S/ {monto}. Por favor, realiza el pago."}
+
+            if status_ret == "requiere_cita":
+                citas_disponibles = [c for c in estado["calendario_psicologia"] if not c["ocupado"]]
+                if not citas_disponibles:
+                    raise HTTPException(status_code=400, detail="No hay citas psicológicas disponibles.")
+                return {"status": status_ret, "citas": citas_disponibles, "mensaje": mensaje, "codigo_est": codigo_est}
+            else:
+                return {"status": status_ret, "codigo_est": codigo_est, "mensaje": mensaje}
+        finally:
+            db.close()
 
     async def agendar_cita_psicologica(self, data):
         estado = await self.memory.get_state()

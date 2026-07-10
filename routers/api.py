@@ -16,7 +16,7 @@ from schemas.sse import StreamChatRequest
 from agents.orchestrator import ColegioOrchestrator
 from core.antigravity import school_db, event_bus, agent_graph, telemetry_store, sse_manager
 from core.tasks import procesar_admision_batch, celery_app
-from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB
+from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB
 from agents.subagents import ag_monitor
 
 
@@ -49,7 +49,7 @@ async def set_config(config: ConfigMatricula, current_user: TokenData = Depends(
         "cupos_aula_primaria": config.cupos_aula_primaria,
         "cupos_aula_secundaria": config.cupos_aula_secundaria
     }
-    await school_db.save_state(state)
+    await school_db.set_state(state)
     return {"message": "Configuración de costos y cupos actualizada correctamente."}
 
 
@@ -731,7 +731,29 @@ async def atender_cita_rendimiento(
         cita.informe = req.informe
     cita.psicologo_id = current_user.user_id
     db.commit()
-    return {"message": "Cita marcada como Atendida exitosamente."}
+
+    vectorizado = False
+    if req.informe:
+        try:
+            from core.vector_store import vector_store
+            import datetime
+            vector_store.upsert_record(
+                collection_name="historiales_psicologia",
+                doc_id=f"cita_{cita.id}",
+                content=req.informe,
+                metadata={
+                    "alumno_id": cita.alumno_id,
+                    "psicologo_id": current_user.user_id,
+                    "fecha": datetime.date.today().isoformat(),
+                    "tipo": "Cita"
+                }
+            )
+            vectorizado = True
+        except Exception as e:
+            import logging
+            logging.error(f"Error al guardar embedding de cita {cita.id}: {e}")
+
+    return {"message": "Cita marcada como Atendida exitosamente.", "vectorizacion": vectorizado}
 
 @router.post("/psicologia/evaluar/{codigo_obs}")
 async def evaluar_obs(
@@ -839,8 +861,10 @@ async def pagar_matricula(
                 
                 if not receiver_mail or "@" not in receiver_mail:
                     receiver_mail = "iep.josemariaarguedas.1998@gmail.com"
-                # TODO: En un sistema real esto debe venir del .env
-                app_password = os.getenv("SMTP_PASSWORD", "uxdf ltqw enky rvxr")
+                app_password = os.getenv("SMTP_PASSWORD")
+                if not app_password:
+                    logging.error("SMTP_PASSWORD no configurado. No se enviará el correo de credenciales al apoderado.")
+                    return
                 
                 sender_email = "iep.josemariaarguedas.1998@gmail.com"
                 
@@ -1001,7 +1025,8 @@ async def registrar_asistencia_batch(
     # Chequeo predictivo de inasistencia > 30%
     import asyncio
     from agents.subagents import ag_monitor
-    from core.antigravity import swarm_client, school_db
+    from agents.orchestrator import swarm_client
+    from core.antigravity import school_db
     
     for alumno_id in alumnos_modificados:
         todas = db.query(AsistenciaDB).filter(AsistenciaDB.alumno_id == alumno_id).all()
@@ -1029,7 +1054,7 @@ async def registrar_asistencia_batch(
                     
                     alertas_ia = state.get("alertas_ia", [])
                     alertas_ia.append({"alumno": alumno.nombres, "reporte": informe, "tipo": "Deserción"})
-                    asyncio.run(school_db.save_state({**state, "alertas_ia": alertas_ia}))
+                    asyncio.run(school_db.set_state({**state, "alertas_ia": alertas_ia}))
 
     return {"message": f"{len(batch.asistencias)} registros de asistencia guardados y analizados predictivamente."}
 
@@ -1039,7 +1064,20 @@ async def subir_notas_batch(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    # Agrupar por curso_id para no hacer queries redundantes si vienen muchas notas del mismo curso
+    cursos_cacheados = {}
+
     for registro in batch.notas:
+        curso_id = registro.curso_id
+        if curso_id not in cursos_cacheados:
+            curso = db.query(CursoDB).filter(CursoDB.id == curso_id).first()
+            if not curso:
+                raise HTTPException(status_code=404, detail=f"Curso {curso_id} no encontrado.")
+            # Si el usuario NO es admin, verificamos que sea el dueño del curso
+            if current_user.role != "ADMIN" and curso.docente_id != current_user.user_id:
+                raise HTTPException(status_code=403, detail="No tienes permiso para calificar este curso.")
+            cursos_cacheados[curso_id] = curso
+
         nueva_nota = NotaDB(
             alumno_id=registro.alumno_id,
             curso_id=registro.curso_id,
@@ -1097,7 +1135,27 @@ async def agregar_observacion_tutor(
     except Exception as e:
         print("Error en Radar Antibullying:", e)
 
-    return {"message": "Observación enviada al Portal de Familia y analizada por la IA Centinela."}
+    vectorizado = False
+    try:
+        from core.vector_store import vector_store
+        import datetime as dt
+        vector_store.upsert_record(
+            collection_name="historiales_psicologia",
+            doc_id=f"observacion_{nueva_obs.id}",
+            content=req.texto,
+            metadata={
+                "alumno_id": req.alumno_id,
+                "docente_id": current_user.user_id,
+                "fecha": dt.date.today().isoformat(),
+                "tipo": "Observacion Docente"
+            }
+        )
+        vectorizado = True
+    except Exception as e:
+        import logging
+        logging.error(f"Error al guardar embedding de observacion {nueva_obs.id}: {e}")
+
+    return {"message": "Observación enviada al Portal de Familia y analizada por la IA Centinela.", "vectorizacion": vectorizado}
 
 @router.get("/tutor/horarios_disponibles")
 async def tutor_horarios_disponibles(db: Session = Depends(get_db)):
@@ -1488,16 +1546,54 @@ async def create_curso(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
-    nuevo_curso = CursoDB(
-        nombre=curso.nombre,
-        nivel=curso.nivel,
-        grado=curso.grado,
-        seccion=curso.seccion,
-        docente_id=curso.docente_id
-    )
-    db.add(nuevo_curso)
+    creados = []
+    omitidos = []
+
+    for grado in curso.grados:
+        # Buscar todas las secciones que existen en ese nivel/grado
+        secciones_existentes = (
+            db.query(CursoDB.seccion)
+            .filter(CursoDB.nivel == curso.nivel, CursoDB.grado == grado)
+            .distinct()
+            .all()
+        )
+        secciones = [s[0] for s in secciones_existentes] if secciones_existentes else ["A"]
+
+        for seccion in secciones:
+            # Validar duplicado
+            existe = db.query(CursoDB).filter(
+                CursoDB.nombre == curso.nombre,
+                CursoDB.nivel == curso.nivel,
+                CursoDB.grado == grado,
+                CursoDB.seccion == seccion
+            ).first()
+
+            if existe:
+                omitidos.append(f"{grado}°{seccion}")
+                continue
+
+            nuevo = CursoDB(
+                nombre=curso.nombre,
+                nivel=curso.nivel,
+                grado=grado,
+                seccion=seccion,
+                docente_id=curso.docente_id
+            )
+            db.add(nuevo)
+            creados.append(f"{grado}°{seccion}")
+
     db.commit()
-    return {"message": f"Curso '{curso.nombre}' asignado correctamente."}
+
+    if not creados:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El curso '{curso.nombre}' ya existe en todas las combinaciones seleccionadas: {', '.join(omitidos)}"
+        )
+
+    resumen = f"Curso '{curso.nombre}' creado en: {', '.join(creados)}."
+    if omitidos:
+        resumen += f" Omitidos por duplicado: {', '.join(omitidos)}."
+    return {"message": resumen}
 
 from schemas.mcp import AulaPrimariaCreate, AsignarDocenteRequest
 
@@ -1703,3 +1799,66 @@ async def cierre_escolar(db: Session = Depends(get_db), current_user: TokenData 
 
     db.commit()
     return {"message": "Cierre de año ejecutado. Promedios calculados, estados actualizados, horarios y tutores reiniciados."}
+
+# ======================================================================
+# API MINEDU (Catálogo Curricular Nacional)
+# ======================================================================
+
+@router.get("/minedu_competencias")
+async def get_minedu_competencias(
+    curso: Optional[str] = None,
+    nivel: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(CompetenciaMINEDUDB)
+    if curso:
+        query = query.filter(CompetenciaMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
+    if nivel:
+        query = query.filter(CompetenciaMINEDUDB.nivel.ilike(f"%{nivel}%"))
+    resultados = query.all()
+    return [{"id": c.id, "nivel": c.nivel, "curso_nombre": c.curso_nombre, "descripcion": c.descripcion} for c in resultados]
+
+@router.get("/minedu_capacidades")
+async def get_minedu_capacidades(
+    competencia_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(CapacidadMINEDUDB)
+    if competencia_id:
+        query = query.filter(CapacidadMINEDUDB.competencia_id == competencia_id)
+    resultados = query.all()
+    return [{"id": c.id, "competencia_id": c.competencia_id, "descripcion": c.descripcion} for c in resultados]
+
+@router.get("/minedu_estandares")
+async def get_minedu_estandares(
+    curso: Optional[str] = None,
+    nivel: Optional[str] = None,
+    ciclo: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(EstandarMINEDUDB)
+    if curso:
+        query = query.filter(EstandarMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
+    if nivel:
+        query = query.filter(EstandarMINEDUDB.nivel.ilike(f"%{nivel}%"))
+    if ciclo:
+        query = query.filter(EstandarMINEDUDB.ciclo.ilike(f"%{ciclo}%"))
+    resultados = query.all()
+    return [{"id": e.id, "nivel": e.nivel, "ciclo": e.ciclo, "curso_nombre": e.curso_nombre, "descripcion": e.descripcion} for e in resultados]
+
+@router.get("/minedu_desempenos")
+async def get_minedu_desempenos(
+    curso: Optional[str] = None,
+    nivel: Optional[str] = None,
+    grado: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(DesempenoMINEDUDB)
+    if curso:
+        query = query.filter(DesempenoMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
+    if nivel:
+        query = query.filter(DesempenoMINEDUDB.nivel.ilike(f"%{nivel}%"))
+    if grado:
+        query = query.filter(DesempenoMINEDUDB.grado == grado)
+    resultados = query.all()
+    return [{"id": d.id, "nivel": d.nivel, "grado": d.grado, "curso_nombre": d.curso_nombre, "descripcion": d.descripcion} for d in resultados]

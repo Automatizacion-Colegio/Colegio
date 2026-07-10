@@ -4,7 +4,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
-from models.database import get_db, CajaDiariaDB, TransaccionDB, AlumnoDB
+from models.database import get_db, CajaDiariaDB, TransaccionDB, AlumnoDB, AdmisionDB
+from core.antigravity import school_db
 from auth.security import get_current_user, TokenData, require_role
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
@@ -162,7 +163,10 @@ async def generar_email_cobranza(req: CobranzaEmailReq, db: Session = Depends(ge
 async def leer_voucher_ocr(file: UploadFile = File(...), current_user: TokenData = Depends(require_role(["SECRETARIO"]))):
     try:
         image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+        except Exception as img_err:
+            raise HTTPException(status_code=400, detail=f"Imagen inválida o corrupta: {str(img_err)}")
         
         try:
             import sys
@@ -204,3 +208,47 @@ async def leer_voucher_ocr(file: UploadFile = File(...), current_user: TokenData
         return json.loads(res)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error leyendo voucher: {e}")
+
+
+# ======================================================================
+# Gestión de Admisiones (Secretaría)
+# ======================================================================
+
+@router.get("/admisiones")
+async def listar_admisiones(
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))
+):
+    admisiones = db.query(AdmisionDB).order_by(AdmisionDB.fecha_registro.desc()).all()
+    return [{
+        "id": a.id, 
+        "codigo_est": a.codigo_est, 
+        "nombres": f"{a.nombres} {a.apellidos}", 
+        "nivel": a.nivel, 
+        "grado": a.grado, 
+        "promedio": a.promedio, 
+        "conducta": a.conducta, 
+        "estado_proceso": a.estado_proceso
+    } for a in admisiones]
+
+@router.post("/admisiones/{id_admision}/estado")
+async def cambiar_estado_admision(
+    id_admision: int,
+    estado: str, # "Admitido (Falta Pago)" o "Rechazado"
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))
+):
+    admision = db.query(AdmisionDB).filter(AdmisionDB.id == id_admision).first()
+    if not admision:
+        raise HTTPException(status_code=404, detail="Admisión no encontrada")
+    
+    admision.estado_proceso = estado
+    db.commit()
+
+    # Sincronizar con la memoria JSON
+    mem_state = await school_db.get_state()
+    if admision.codigo_est in mem_state.get("enrolled_students", {}):
+        mem_state["enrolled_students"][admision.codigo_est]["estado_proceso"] = estado
+        await school_db.set_state(mem_state)
+
+    return {"message": f"Estado de admisión cambiado a {estado} exitosamente."}

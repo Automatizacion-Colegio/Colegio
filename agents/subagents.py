@@ -4,16 +4,26 @@ Subagentes del ERP Escolar orquestados por OpenAI Swarm.
 from swarm import Agent
 
 # Definición de herramientas (tools) para los agentes
-def buscar_historiales_similares(context_variables, query: str) -> str:
-    """Busca historiales psicológicos en la base vectorial para alumnos con problemas de conducta."""
+def buscar_historiales_similares(context_variables, query: str, alumno_id: int = None) -> str:
+    """Busca historiales psicológicos en la base vectorial. Usa alumno_id para filtrar por un alumno específico si lo conoces."""
     try:
         from core.vector_store import vector_store
-        resultados = vector_store.semantic_search("historiales_psicologia", query, n_results=1)
+        
+        where_filter = None
+        if alumno_id is not None:
+            where_filter = {"alumno_id": alumno_id}
+            
+        resultados = vector_store.semantic_search(
+            collection_name="historiales_psicologia", 
+            query=query, 
+            n_results=3,
+            where=where_filter
+        )
         if resultados:
-            return f"Historial encontrado: {resultados[0].content}"
+            return "Historiales encontrados:\n" + "\n".join([f"- {r.content} (Metadata: {r.metadata})" for r in resultados])
     except Exception as e:
         return f"Error al buscar historial: {str(e)}"
-    return "Sin historial previo encontrado."
+    return "Sin historial previo encontrado para ese criterio."
 
 def calcular_pago(context_variables, nivel: str) -> str:
     """Calcula el pago de la matrícula según el nivel (Primaria o Secundaria) desde la BD en tiempo real."""
@@ -188,8 +198,10 @@ def notificar_padre_gmail(context_variables, mensaje: str) -> str:
     import logging
     
     sender_email = "iep.josemariaarguedas.1998@gmail.com"
-    # TODO: En un sistema real esto debe venir del .env
-    app_password = os.getenv("SMTP_PASSWORD", "uxdf ltqw enky rvxr")
+    app_password = os.getenv("SMTP_PASSWORD")
+    if not app_password:
+        logging.error("SMTP_PASSWORD no configurado en el entorno. No se enviará el correo de urgencia.")
+        return "Error: SMTP_PASSWORD no configurado. Contacta al administrador del sistema."
     
     # Extraer el correo del padre de los context_variables
     receiver_email = context_variables.get("ap_correo", "iep.josemariaarguedas.1998@gmail.com")
