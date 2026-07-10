@@ -8,11 +8,13 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Directorio de trabajo
 WORKDIR /app
 
-# Instalar dependencias del sistema necesarias para compilar paquetes (como psycopg2)
+# Instalar dependencias del sistema necesarias para compilar paquetes y OCR
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     git \
+    tesseract-ocr \
+    tesseract-ocr-spa \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar el archivo de requisitos y las dependencias
