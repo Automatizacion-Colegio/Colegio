@@ -81,8 +81,7 @@ def patched_create(*args, **kwargs):
                 )
                 temp_client = wrap_openai(raw_client)
                 
-                with tracing_context(tags=[agent_name], metadata={"agent_name": agent_name, "provider": "google_ai_studio"}):
-                    response = temp_client.chat.completions.create(*args, **kwargs)
+                response = temp_client.chat.completions.create(*args, **kwargs)
                 
                 if hasattr(response, "choices") and response.choices:
                     for choice in response.choices:
@@ -139,8 +138,7 @@ def patched_create(*args, **kwargs):
                     meta_dict["fallback"] = True
                     tags_list.append("fallback")
 
-                with tracing_context(tags=tags_list, metadata=meta_dict):
-                    response = temp_client.chat.completions.create(*args, **kwargs)
+                response = temp_client.chat.completions.create(*args, **kwargs)
                 
                 if hasattr(response, "choices") and response.choices:
                     for choice in response.choices:
