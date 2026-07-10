@@ -1,0 +1,86 @@
+name: Deploy Backend to Google Cloud Run
+
+on:
+  push:
+    branches: [ "main", "master" ]
+
+# Permisos requeridos para que OIDC funcione
+permissions:
+  contents: 'read'
+  id-token: 'write'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Autenticar en Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # Aquí va la identidad que creamos en tu terminal de GCP
+          workload_identity_provider: 'projects/818395339465/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-deployer@automatizacion-502007.iam.gserviceaccount.com'
+
+      - name: Configurar Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configurar Docker para Artifact Registry
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      - name: Construir y Empujar imagen Docker
+        env:
+          # us-central1-docker.pkg.dev/TU_PROYECTO/TU_REPOSITORIO/NOMBRE_IMAGEN:TAG
+          IMAGE_NAME: us-central1-docker.pkg.dev/automatizacion-502007/repo-backend/erp-backend:${{ github.sha }}
+        run: |
+          docker build -t $IMAGE_NAME .
+          docker push $IMAGE_NAME
+
+      - name: Desplegar en Cloud Run
+        env:
+          IMAGE_NAME: us-central1-docker.pkg.dev/automatizacion-502007/repo-backend/erp-backend:${{ github.sha }}
+        run: |
+          gcloud run deploy erp-backend \
+            --image $IMAGE_NAME \
+            --region us-central1 \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --memory 1024Mi \
+            --cpu 1 \
+            --max-instances 5 \
+            --set-env-vars DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            --set-env-vars FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
+            --set-env-vars JWT_SECRET="${{ secrets.JWT_SECRET }}" \
+            --set-env-vars REDIS_URL="${{ secrets.REDIS_URL }}" \
+            --set-env-vars CELERY_BROKER_URL="${{ secrets.CELERY_BROKER_URL }}" \
+            --set-env-vars CELERY_RESULT_BACKEND="${{ secrets.CELERY_RESULT_BACKEND }}" \
+            --set-env-vars GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
+            --set-env-vars GROQ_API_KEY_1="${{ secrets.GROQ_API_KEY_1 }}" \
+            --set-env-vars GROQ_API_KEY_2="${{ secrets.GROQ_API_KEY_2 }}" \
+            --set-env-vars GROQ_API_KEY_3="${{ secrets.GROQ_API_KEY_3 }}" \
+            --set-env-vars GROQ_API_KEY_4="${{ secrets.GROQ_API_KEY_4 }}" \
+            --set-env-vars GROQ_API_KEY_5="${{ secrets.GROQ_API_KEY_5 }}" \
+            --set-env-vars GROQ_API_KEY_6="${{ secrets.GROQ_API_KEY_6 }}" \
+            --set-env-vars GROQ_API_KEY_7="${{ secrets.GROQ_API_KEY_7 }}" \
+            --set-env-vars GROQ_API_KEY_8="${{ secrets.GROQ_API_KEY_8 }}" \
+            --set-env-vars GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
+            --set-env-vars GOOGLE_API_KEY_1="${{ secrets.GOOGLE_API_KEY_1 }}" \
+            --set-env-vars GOOGLE_API_KEY_2="${{ secrets.GOOGLE_API_KEY_2 }}" \
+            --set-env-vars GOOGLE_API_KEY_3="${{ secrets.GOOGLE_API_KEY_3 }}" \
+            --set-env-vars GOOGLE_API_KEY_4="${{ secrets.GOOGLE_API_KEY_4 }}" \
+            --set-env-vars GOOGLE_API_KEY_5="${{ secrets.GOOGLE_API_KEY_5 }}" \
+            --set-env-vars LANGCHAIN_TRACING_V2="true" \
+            --set-env-vars LANGCHAIN_ENDPOINT="https://api.smith.langchain.com" \
+            --set-env-vars LANGCHAIN_PROJECT="erp-escolar-ai" \
+            --set-env-vars LANGCHAIN_API_KEY="${{ secrets.LANGCHAIN_API_KEY }}" \
+            --set-env-vars LANGCHAIN_API_KEY_1="${{ secrets.LANGCHAIN_API_KEY_1 }}" \
+            --set-env-vars LANGCHAIN_API_KEY_2="${{ secrets.LANGCHAIN_API_KEY_2 }}" \
+            --set-env-vars LANGCHAIN_API_KEY_3="${{ secrets.LANGCHAIN_API_KEY_3 }}" \
+            --set-env-vars LANGCHAIN_API_KEY_4="${{ secrets.LANGCHAIN_API_KEY_4 }}" \
+            --set-env-vars LANGCHAIN_API_KEY_5="${{ secrets.LANGCHAIN_API_KEY_5 }}" \
+            --set-env-vars LANGCHAIN_API_KEY_6="${{ secrets.LANGCHAIN_API_KEY_6 }}" \
+            --set-env-vars SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"

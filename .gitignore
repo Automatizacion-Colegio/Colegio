@@ -1,0 +1,11 @@
+
+# Local Vector Database
+chroma_db/
+
+.env
+__pycache__/
+*.pyc
+venv/
+.venv/
+.pytest_cache/
+.DS_Store
