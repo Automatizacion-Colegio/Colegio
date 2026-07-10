@@ -74,9 +74,9 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --port 8080 \
-            --memory 1024Mi \
-            --cpu 1 \
-            --max-instances 5 \
+            --memory 2048Mi \
+            --cpu 2 \
+            --max-instances 2 \
             --set-env-vars DATABASE_URL="${{ secrets.DATABASE_URL }}" \
             --set-env-vars FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
             --set-env-vars JWT_SECRET="${{ secrets.JWT_SECRET }}" \
