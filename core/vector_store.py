@@ -10,6 +10,11 @@ from langchain_postgres.vectorstores import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from models.database import SQLALCHEMY_DATABASE_URL
 
+# langchain-postgres (psycopg3) requiere que el esquema sea postgresql+psycopg://
+VECTOR_DB_URL = SQLALCHEMY_DATABASE_URL
+if VECTOR_DB_URL and VECTOR_DB_URL.startswith("postgresql://"):
+    VECTOR_DB_URL = VECTOR_DB_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
 # Modelo para compatibilidad hacia atrás
 class SemanticResult(BaseModel):
     id: str
@@ -28,14 +33,14 @@ class VectorStore:
         self.historiales_store = PGVector(
             embeddings=self.embeddings,
             collection_name="historiales_psicologia",
-            connection=SQLALCHEMY_DATABASE_URL,
+            connection=VECTOR_DB_URL,
             use_jsonb=True
         )
         
         self.curriculos_store = PGVector(
             embeddings=self.embeddings,
             collection_name="curriculos",
-            connection=SQLALCHEMY_DATABASE_URL,
+            connection=VECTOR_DB_URL,
             use_jsonb=True
         )
 
