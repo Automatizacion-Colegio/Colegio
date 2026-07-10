@@ -1499,7 +1499,28 @@ async def create_curso(
     db.commit()
     return {"message": f"Curso '{curso.nombre}' asignado correctamente."}
 
-from schemas.mcp import AulaPrimariaCreate
+from schemas.mcp import AulaPrimariaCreate, AsignarDocenteRequest
+
+@router.patch("/admin/cursos/{curso_id}/asignar-docente", tags=["Admin"])
+def asignar_docente_curso(
+    curso_id: int, 
+    request: AsignarDocenteRequest, 
+    db: Session = Depends(get_db), 
+    current_user: TokenData = Depends(require_role(["ADMIN"]))
+):
+    curso = db.query(CursoDB).filter(CursoDB.id == curso_id).first()
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    
+    if request.docente_id is not None:
+        docente = db.query(UserDB).filter(UserDB.id == request.docente_id, UserDB.role == "DOCENTE").first()
+        if not docente:
+            raise HTTPException(status_code=404, detail="Docente no encontrado o inválido")
+            
+    curso.docente_id = request.docente_id
+    db.commit()
+    return {"status": "success", "message": "Docente asignado correctamente al curso"}
+
 @router.post("/admin/aula_primaria")
 async def create_aula_primaria(
     aula: AulaPrimariaCreate,

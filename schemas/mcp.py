@@ -57,12 +57,15 @@ class CursoCreate(BaseModel):
     nivel: Literal["PRIMARIA", "SECUNDARIA"]
     grado: int
     seccion: str
-    docente_id: int
+    docente_id: Optional[int] = None
+
+class AsignarDocenteRequest(BaseModel):
+    docente_id: Optional[int] = None
 
 class AulaPrimariaCreate(BaseModel):
     grado: int
     seccion: str
-    docente_id: int
+    docente_id: Optional[int] = None
 
 class TutorCreate(BaseModel):
     docente_id: int
