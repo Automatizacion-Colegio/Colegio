@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from swarm import Swarm
 from openai import OpenAI
 from langsmith.wrappers import wrap_openai
+from langchain_core.tracers.context import tracing_v2_enabled as tracing_context
 import contextvars
 
 current_swarm_agent = contextvars.ContextVar("current_swarm_agent", default="unknown")
