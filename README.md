@@ -1,13 +1,16 @@
 <div align="center">
 
-# 🎓 ERP Escolar AI - Backend
+# 🎓 ERP Escolar AI — Backend
 
-**Plataforma educativa avanzada impulsada por Agentes de Inteligencia Artificial**
+**Plataforma educativa de próxima generación impulsada por Agentes IA autónomos, RAG y LLMs**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109.2-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangChain](https://img.shields.io/badge/LangChain-LangGraph-1C3C3C?logo=langchain&logoColor=white)](https://langchain.com/)
+[![Groq](https://img.shields.io/badge/LLM-Groq%20%7C%20Gemini-F55036?logo=groq&logoColor=white)](https://groq.com/)
+[![PostgreSQL](https://img.shields.io/badge/DB-PostgreSQL%20%2B%20pgvector-336791?logo=postgresql&logoColor=white)](https://neon.tech/)
+[![Redis](https://img.shields.io/badge/Cache-Redis-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Cloud Run](https://img.shields.io/badge/Deploy-Google%20Cloud%20Run-4285F4?logo=googlecloud)](https://cloud.google.com/run)
 
 </div>
 
@@ -16,7 +19,8 @@
 ## 📋 Tabla de Contenidos
 
 - [Descripción](#-descripción)
-- [Arquitectura](#-arquitectura)
+- [Arquitectura del Sistema](#-arquitectura-del-sistema)
+- [Stack de IA y Automatización](#-stack-de-ia-y-automatización)
 - [Stack Tecnológico](#-stack-tecnológico)
 - [Módulos del Sistema](#-módulos-del-sistema)
 - [Seguridad](#-seguridad)
@@ -24,139 +28,329 @@
 - [Variables de Entorno](#-variables-de-entorno)
 - [Instalación y Ejecución Local](#-instalación-y-ejecución-local)
 - [CI/CD Pipeline](#-cicd-pipeline)
-- [Base de Datos e IA](#-base-de-datos-e-ia)
 - [Estructura del Proyecto](#-estructura-del-proyecto)
 
 ---
 
 ## 📖 Descripción
 
-**ERP Escolar AI Backend** es el núcleo lógico de un sistema de gestión escolar (I.E.P. José María Arguedas). Construido en Python con **FastAPI**, orquesta no solo operaciones CRUD típicas (gestión de alumnos, notas, personal) sino también **Agentes Inteligentes Autónomos** basados en LangGraph y LLMs (Gemini, Groq). Esto permite flujos automatizados de tutoría, evaluación académica y soporte administrativo.
+**ERP Escolar AI Backend** es el núcleo lógico de un sistema de gestión escolar inteligente para la I.E.P. José María Arguedas. Construido en **Python + FastAPI**, va más allá de las operaciones CRUD tradicionales al incorporar un ecosistema completo de **IA generativa y automatización**:
+
+- 🤖 **Agentes autónomos** orquestados con **LangGraph** que razonan, buscan contexto y actúan.
+- 🔍 **RAG (Retrieval-Augmented Generation)** con **PGVector** para consultas semánticas sobre historiales de alumnos.
+- 🧠 **LLMs** de última generación (Groq/Llama, Google Gemini) para informes, análisis psicológico y sílabos.
+- 🌐 **MCP (Multi-Channel Processing / Swarm)** para enrutar mensajes al agente correcto según el rol del usuario.
+- 🟥 **Redis como caché semántica** para reutilizar respuestas frecuentes del chatbot y reducir hasta un 80% el consumo de tokens.
+- ⚙️ **Celery + Redis** para procesamiento de tareas pesadas en background (batch, reportes nocturnos).
+- 📊 **BI Agent** que traduce preguntas en lenguaje natural a consultas SQL sobre la base de datos escolar.
 
 ---
 
-## 🏗️ Arquitectura
+## 🏗️ Arquitectura del Sistema
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                        CLIENTES                             │
-│                 Frontend (React / Vercel)                   │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ HTTPS
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Google Cloud Run (Serverless)                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              ERP Escolar AI (FastAPI)               │    │
-│  │                                                     │    │
-│  │  Middlewares (CORS / TraceID) → Routers             │    │
-│  │       │                              │              │    │
-│  │  Auth & JWT                 LangGraph Orchestrator  │    │
-│  └──────────────────────────────────────┼──────────────┘    │
-└────────┬──────────────┬─────────────────┼───────────────────┘
-         │              │                 │ (Celery / Async)
-         ▼              ▼                 ▼
-    Neon (PgSQL)      Redis        Modelos de IA (LLMs)
-   + pgvector      (Broker/Cache)  (Groq / Google Gemini)
+┌──────────────────────────────────────────────────────────────────┐
+│                         CLIENTES                                 │
+│           React + Vite (Vercel) — 5 Paneles por Rol              │
+│     Admin / Docente / Psicólogo / Padre / Secretaría             │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │ HTTPS / REST + SSE Streaming
+                             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    Google Cloud Run                              │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │               ERP Escolar AI (FastAPI)                     │  │
+│  │                                                            │  │
+│  │  ┌──────────────┐    ┌──────────────────────────────────┐  │  │
+│  │  │  Middlewares │    │      MCP Router / Swarm          │  │  │
+│  │  │  CORS/TraceID│───▶│  ag_soporte / ag_psicologo /    │  │  │
+│  │  └──────────────┘    │  ag_evaluacion / ag_docente      │  │  │
+│  │                      └─────────────┬────────────────────┘  │  │
+│  │                      ┌─────────────▼────────────────────┐  │  │
+│  │                      │   Redis Semantic Cache Layer     │  │  │
+│  │                      │  HIT → 0 tokens, respuesta       │  │  │
+│  │                      │  instantánea (TTL: 24h)          │  │  │
+│  │                      └─────────────┬────────────────────┘  │  │
+│  │                                    │ CACHE MISS             │  │
+│  │  ┌─────────────────────────────────▼────────────────────┐  │  │
+│  │  │              Deep Agents (LangGraph)                 │  │  │
+│  │  │  Psicólogo │ BI Agent │ Sílabo │ Examen │ Justific.  │  │  │
+│  │  └─────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────┬────────────────┬────────────────┬─────────────────────────┘
+       │                │                │
+       ▼                ▼                ▼
+  Neon (PgSQL)        Redis          LLMs API
+  + pgvector     Cache + Celery     Groq / Gemini
+  (RAG Store)    Broker/Backend     LangSmith Traces
 ```
+
+---
+
+## 🤖 Stack de IA y Automatización
+
+### 🟥 Redis — Caché Semántica para Ahorro de Tokens
+
+Redis actúa como una **capa de caché semántica** delante del LLM. Es uno de los mecanismos más importantes del sistema en términos de **coste operativo**.
+
+```text
+Usuario: "¿Cuál es el costo de matrícula de Primaria?"
+       │
+       ▼
+  Orchestrator normaliza → "cual es el costo de matricula de primaria"
+       │
+       ▼
+  Redis GET  →  faq_cache:<mensaje_normalizado>
+       │
+       ├─▶ CACHE HIT  ✅ → Respuesta en <50ms, consume 0 tokens LLM
+       │                    TTL: 24 horas (86400s)
+       │
+       └─▶ CACHE MISS ❌ → Llama al LLM (Groq/Swarm)
+                            └─▶ Redis SETEX faq_cache:<key> 86400 <respuesta>
+                                 (se guarda para las próximas 24h)
+```
+
+**Reglas de caché inteligentes:**
+- ✅ Solo cachea el **primer mensaje** de la sesión (sin historial previo).
+- ✅ Solo cachea si respondió `Agente_Soporte` (preguntas FAQ del colegio).
+- ❌ No cachea si la respuesta incluyó `tool_calls` (datos dinámicos como notas o precios en tiempo real).
+- 🔤 Las claves se **normalizan** (minúsculas, sin puntuación) para maximizar los CACHE HIT.
+
+**Impacto en costos:** En un colegio con decenas de padres preguntando lo mismo (horarios, costos, fechas), esto puede reducir el consumo de tokens del LLM en un **60-80%** en horas pico.
+
+**Archivo clave:** `agents/orchestrator.py` — líneas ~276-342
+
+---
+
+### ⚙️ Celery + Redis — Cola de Tareas Asíncronas
+
+Redis también funciona como **broker de mensajes** para Celery:
+
+| Tarea Celery | Función |
+|---|---|
+| `procesar_admision_batch` | Procesa lotes de PDFs de admisión fuera del request |
+| `generar_reportes_nocturnos` | Reportes académicos programados (Celery Beat) |
+
+```text
+POST /api/admin/tareas/batch
+  └─▶ Celery encola en Redis
+        └─▶ Worker procesa en background
+              └─▶ GET /api/admin/tareas/{id}/estado → consulta resultado
+```
+
+**Archivo clave:** `core/tasks.py`
+
+---
+
+### 🔗 LangChain & LangGraph — Orquestación de Agentes
+
+**LangGraph** crea **grafos de estado** donde cada nodo es un agente especialista:
+
+```text
+LangGraph Psychologist Flow:
+  START
+    └─▶ [nodo_analisis]      → Lee historial RAG del alumno desde PGVector
+          └─▶ [nodo_riesgo]  → Evalúa nivel: BAJO / MEDIO / ALTO
+                └─▶ [nodo_recomendacion] → Genera plan de acción
+  END
+```
+
+**LangChain** se usa para: chains de prompt→LLM→parser, retrievers PGVector y memoria conversacional por sesión.
+
+**Archivos clave:**
+- `agents/orchestrator.py` — Grafo principal LangGraph
+- `agents/subagents.py` — Agentes Swarm + tools (MCP)
+- `agents/deep_agents/psychologist_agent.py` — Grafo psicólogo
+
+---
+
+### 🧠 LLMs Integrados (Groq + Google Gemini)
+
+| Proveedor | Modelo | Uso Principal |
+|---|---|---|
+| **Groq** | `llama-3.1-8b-instant` | Chat rápido, resúmenes, OCR parsing |
+| **Groq** | `llama-3.3-70b-versatile` | Análisis psicológico, BI queries complejas |
+| **Google Gemini** | `gemini-2.0-flash` | Generación de sílabos CNEB, exámenes |
+
+**Rotación de keys:** Variables `GROQ_API_KEY_1` al `_8` distribuyen la carga y evitan límites de cuota.
+
+---
+
+### 🔍 RAG — Retrieval-Augmented Generation con PGVector
+
+```text
+1. INGESTA (al atender cita psicológica o registrar observación docente):
+   Texto del informe
+     └─▶ Embedding (Google text-embedding-004)
+           └─▶ PGVector (colección: "historiales_psicologia")
+                 Metadata: { alumno_id, fecha, psicologo_id / docente_id }
+
+2. CONSULTA (agente psicólogo recibe pregunta):
+   "¿Qué comportamiento tuvo Luis García este mes?"
+     └─▶ Embedding de la pregunta
+           └─▶ Búsqueda semántica PGVector
+                 WHERE metadata.alumno_id = <id>   ← Filtro específico por alumno
+                 └─▶ Top-3 fragmentos relevantes inyectados al LLM
+                       └─▶ Respuesta precisa y contextualizada
+```
+
+**Archivo clave:** `core/vector_store.py`
+
+---
+
+### 🌐 MCP — Multi-Channel Processing (Swarm Router)
+
+```text
+Usuario: "Mi hijo faltó ayer por enfermedad"
+       │
+       ▼
+  [Swarm Router] detecta intención + rol del JWT
+       │
+       ├─▶ ag_soporte      → FAQs, costos, información general
+       ├─▶ ag_psicologo    → Conducta, bienestar, reportes psicológicos
+       ├─▶ ag_evaluacion   → Notas, rendimiento, comparativas
+       └─▶ ag_docente      → Horarios, alumnos del aula, observaciones
+```
+
+**Archivo clave:** `agents/subagents.py`
+
+---
+
+### 📊 BI Agent — Business Intelligence con NL2SQL
+
+```text
+"¿Cuántos alumnos de Secundaria tienen más de 3 faltas este mes?"
+    └─▶ [BI Agent LLM] genera SQL dinámico
+          └─▶ Ejecuta sobre Postgres (Neon)
+                └─▶ "12 alumnos de Secundaria tienen más de 3 faltas en julio."
+```
+
+**Endpoint:** `POST /api/deep-agents/bi-query`
+
+---
+
+### 📄 Deep Agents — Tareas IA Especializadas
+
+| Agente | Endpoint | Función |
+|---|---|---|
+| **Psicólogo IA** | `POST /psicologia/chat` | Análisis conductual con RAG + LangGraph |
+| **Generador de Sílabos** | `POST /deep-agents/silabo/generar` | Sílabos 14 secciones alineados al CNEB |
+| **Generador de Exámenes** | `POST /deep-agents/generate-exam` | Exámenes con taxonomía de Bloom por grado |
+| **Justificador de Faltas** | `POST /deep-agents/justify-absence` | OCR de certificado médico + registro en BD |
+| **BI Query** | `POST /deep-agents/bi-query` | NL2SQL sobre la BD del colegio |
+| **Orientación Vocacional** | `POST /deep-agents/vocational-guidance` | Perfil del alumno + recomendación de carrera |
+| **Plan Docente** | `POST /deep-agents/teacher-plan` | Plan de clase semanal por área curricular |
+
+---
+
+### 🔭 LangSmith — Trazabilidad de IA en Producción
+
+Cada invocación LLM o cadena LangChain se registra en **LangSmith** para:
+- Ver el prompt exacto enviado al modelo.
+- Medir latencia por nodo del grafo LangGraph.
+- Detectar alucinaciones o respuestas fuera de contexto.
+- Monitorear consumo de tokens por sesión.
 
 ---
 
 ## 🛠️ Stack Tecnológico
 
-| Categoría | Tecnología | Versión |
+| Categoría | Tecnología | Rol |
 |---|---|---|
-| **Lenguaje** | Python | 3.11+ |
-| **Framework Web** | FastAPI | 0.109.2 |
-| **Servidor ASGI** | Uvicorn | 0.27.1 |
-| **Base de Datos** | PostgreSQL (Neon) | — |
-| **ORM** | SQLAlchemy | 2.0.25 |
-| **Validación de Datos** | Pydantic | 2.6.1 |
-| **Base de Datos Vectorial** | `pgvector` + `langchain-postgres` | — |
-| **Agentes e IA** | LangChain / LangGraph | — |
-| **LLMs Integrados** | Groq / Gemini (Google) / OpenAI | — |
-| **Colas / Tareas** | Celery + Redis | 5.3.6 / 5.0.1 |
-| **Seguridad / Auth** | Python-jose + Passlib + bcrypt | — |
-| **Despliegue** | Google Cloud Run + Artifact Registry | — |
-| **CI/CD** | GitHub Actions | — |
+| **Lenguaje** | Python 3.11+ | — |
+| **Framework Web** | FastAPI 0.109+ | API REST + SSE Streaming |
+| **Servidor ASGI** | Uvicorn | Servidor de producción |
+| **Base de Datos SQL** | PostgreSQL (Neon) | Datos transaccionales |
+| **ORM** | SQLAlchemy 2.0 | Mapeo objeto-relacional |
+| **Base de Datos Vectorial** | pgvector + langchain-postgres | Embeddings RAG |
+| **Orquestación IA** | LangGraph + LangChain | Grafos de agentes y cadenas |
+| **LLMs** | Groq (Llama 3.1/3.3) + Google Gemini | Inferencia generativa |
+| **Agentes / Swarm** | OpenAI Swarm (MCP) | Enrutamiento multi-agente |
+| **Embeddings** | Google text-embedding-004 | Vectorización de documentos |
+| **Trazabilidad IA** | LangSmith | Monitoreo de agentes en producción |
+| **Caché Semántica** | Redis (redis.asyncio) | Ahorro de tokens en FAQs frecuentes |
+| **Cola de Tareas** | Celery + Redis | Tareas asíncronas en background |
+| **OCR** | Pytesseract + Pillow | Lectura de documentos médicos y vouchers |
+| **Seguridad / Auth** | Python-jose + Passlib + bcrypt | JWT + RBAC |
+| **Despliegue** | Google Cloud Run | Serverless con auto-scaling |
+| **CI/CD** | GitHub Actions | Deploy automático en push a `main` |
 
 ---
 
 ## 📦 Módulos del Sistema
 
-### 🤖 Inteligencia Artificial y Agentes (`agents/`)
-Utiliza **LangGraph** para crear un grafo de agentes que colaboran entre sí. Incluye orquestadores, validadores y evaluadores que responden de forma contextual según el rol del usuario que consulta (alumno, profesor, padre).
+### 🤖 Agentes IA (`agents/`)
+Grafos **LangGraph** y agentes **Swarm**. Cada agente tiene sus propias `tools` (funciones Python invocables) y acceso controlado al RAG vectorial.
 
-### 👥 Gestión de Usuarios y Roles (`auth/`)
-Soporte para múltiples roles jerárquicos: `ADMIN`, `DOCENTE`, `PSICOLOGO`, `ALUMNO_PADRE`, `SECRETARIO`. Control de acceso estricto mediante tokens JWT.
+### 👥 Autenticación (`auth/`)
+Roles: `ADMIN`, `DOCENTE`, `PSICOLOGO`, `ALUMNO_PADRE`, `SECRETARIO`. JWT con expiración y RBAC mediante dependencias FastAPI.
 
 ### 🏛️ Secretaría (`routers/secretaria.py`)
-Módulo administrativo para la gestión del año escolar, inscripciones, asignación de cursos y mantenimiento del personal.
+Caja Diaria, OCR de vouchers, Panel de Admisiones y correos de cobranza redactados por IA.
 
 ### 🧠 Deep Agents (`routers/deep_agents.py`)
-Endpoints especializados para tareas asíncronas pesadas (análisis de desempeño, generación de informes psicológicos) procesados vía Celery y LangGraph.
+Sílabos CNEB, exámenes, justificación de faltas con OCR, orientación vocacional y análisis BI.
 
-### 📊 Trazabilidad y Auditoría (`core/tracing.py`)
-Cada request HTTP inyecta un `X-Trace-ID`. Registro (Audit Logs) de inicio de sesión exitosos, fallidos o intentos de uso de cuentas suspendidas para análisis de seguridad.
+### 🗄️ Núcleo (`core/`)
+- `vector_store.py` — PGVector RAG con filtros de metadata por alumno.
+- `antigravity.py` — SharedMemory, EventBus SSE, AgentGraph y telemetría.
+- `tracing.py` — Logs JSON estructurados y X-Trace-ID por request.
+- `ocr_engine.py` — Motor OCR con validación previa de imágenes.
+- `tasks.py` — Tareas Celery para procesamiento batch.
 
 ---
 
 ## 🔐 Seguridad
 
-### Autenticación y Autorización
-- **JWT (JSON Web Tokens)**: Endpoints protegidos, tokens con tiempo de expiración y claims de roles.
-- Hasheo de contraseñas utilizando el algoritmo **bcrypt** a través de `passlib`.
-- Roles estrictamente segregados mediante dependencias de FastAPI (RBAC).
-
-### Seguridad de la IA (Jailbreak Prevention)
-- **Escudos Lógicos**: Los *prompts* pasan por filtros de seguridad para evitar *Prompt Injection* y manipulación.
-- **Data Isolation**: Un agente solo tiene acceso al contexto (notas, reportes) del estudiante asociado al token activo.
-
-### Trazabilidad HTTP
-- Middleware personalizado que adjunta tiempos de proceso (`X-Process-Time`) y UUIDs de seguimiento (`X-Trace-ID`) en los headers de cada respuesta.
+- **JWT + RBAC**: Cada endpoint valida el rol del token.
+- **bcrypt**: Contraseñas hasheadas con sal aleatoria.
+- **Prompt Injection Prevention**: Filtros en prompts antes de enviar al LLM.
+- **Data Isolation**: El agente psicólogo solo accede al historial del alumno de la cita activa.
+- **X-Trace-ID**: UUID único por request para auditoría completa.
+- **OCR Validation**: Imágenes validadas con `PIL.Image.open()` antes del procesamiento.
 
 ---
 
 ## 🌐 API Endpoints
 
-
-### Resumen de Enrutadores principales
-
 | Router | Prefijo | Descripción |
 |---|---|---|
-| `Token` | `/token` | Autenticación y generación de JWT |
-| `API General` | `/api` | Endpoints genéricos del sistema (`api.py`) |
-| `Secretaría` | `/api/secretaria` | Acciones exclusivas del área administrativa |
-| `Deep Agents` | `/api/deep_agents` | Consultas complejas a IA y tareas en background |
+| `Token` | `/token` | Login y generación de JWT |
+| `API General` | `/api` | Alumnos, notas, asistencia, citas, cursos, MINEDU |
+| `Secretaría` | `/api/secretaria` | Caja, admisiones, OCR de vouchers |
+| `Deep Agents` | `/api/deep-agents` | IA pesada: sílabos, exámenes, BI, psicólogo |
+
+> 📘 Documentación interactiva en `/docs` (Swagger UI) al levantar el servidor.
 
 ---
 
 ## ⚙️ Variables de Entorno
 
-Crear un archivo `.env` en la raíz del backend con las siguientes configuraciones. En producción, estas se inyectan como GitHub Secrets hacia Cloud Run.
+Copia `.env.example` a `.env` y completa los valores.
 
 ### Base de Datos y Caché
-| Variable | Descripción |
-|---|---|
-| `DATABASE_URL` | String de conexión a Neon PostgreSQL |
-| `REDIS_URL` | Conexión al servidor Redis Cloud |
-| `CELERY_BROKER_URL` | Broker para tareas asíncronas (Redis) |
-| `CELERY_RESULT_BACKEND` | Almacenamiento de resultados de Celery |
+| Variable | Descripción | Requerida |
+|---|---|---|
+| `DATABASE_URL` | String de conexión PostgreSQL (Neon) | ✅ |
+| `REDIS_URL` | Conexión Redis (caché semántica + broker) | ✅ |
+| `CELERY_BROKER_URL` | Broker Celery (Redis) | ✅ |
+| `CELERY_RESULT_BACKEND` | Backend de resultados Celery | ✅ |
 
-### Modelos y LangSmith
-El sistema soporta rotación de API Keys para evitar cuotas limitadas (Load Balancing manual).
-| Variable | Descripción |
-|---|---|
-| `GROQ_API_KEY_1` al `8` | Keys para inferencia ultrarrápida Llama/Mixtral |
-| `LANGCHAIN_API_KEY_1` al `6`| Keys para LangSmith (Trazabilidad de IA) |
-| `GOOGLE_API_KEY` | Modelos nativos de Gemini (Google AI Studio) |
+### LLMs y IA
+| Variable | Descripción | Requerida |
+|---|---|---|
+| `GROQ_API_KEY` | Key principal Groq (Llama) | ✅ |
+| `GROQ_API_KEY_1` al `_8` | Keys secundarias (rotación de cuota) | Opcional |
+| `GOOGLE_API_KEY` | Google AI Studio (Gemini + Embeddings) | ✅ |
+| `LANGCHAIN_API_KEY` | LangSmith trazabilidad de agentes | Opcional |
+| `LANGCHAIN_TRACING_V2` | Activar/desactivar trazas LangSmith | Opcional |
 
 ### Seguridad y App
-| Variable | Descripción |
-|---|---|
-| `JWT_SECRET` | Llave maestra para firma de tokens |
-| `SMTP_PASSWORD` | Contraseña de aplicación para envíos de correo |
-| `FRONTEND_URL` | URL permitida en las políticas de CORS |
+| Variable | Descripción | Requerida |
+|---|---|---|
+| `JWT_SECRET` | Llave maestra de firma de tokens | ✅ |
+| `FRONTEND_URL` | URL del frontend (para CORS) | ✅ |
+| `SMTP_PASSWORD` | Contraseña SMTP para correos | Opcional |
 
 ---
 
@@ -164,19 +358,19 @@ El sistema soporta rotación de API Keys para evitar cuotas limitadas (Load Bala
 
 ### Prerrequisitos
 - Python 3.11+
-- PostgreSQL (o una cuenta en Neon.tech)
-- Redis Server (local o en nube)
+- PostgreSQL local con extensión `pgvector`
+- Redis Server local
+- Tesseract OCR instalado
 
 ### 1. Clonar y crear entorno virtual
 ```bash
-git clone https://github.com/tu-usuario/erp_escolar_ai.git
-cd erp_escolar_ai/backend
+git clone https://github.com/Automatizacion-Colegio/Colegio.git
+cd Colegio
 python -m venv venv
 
-# Activar entorno virtual
-# En Windows:
+# Windows:
 venv\Scripts\activate
-# En Linux/Mac:
+# Linux/Mac:
 source venv/bin/activate
 ```
 
@@ -185,37 +379,41 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configurar `.env`
-Copia las variables de la sección anterior en tu archivo local `.env`.
+### 3. Configurar base de datos local
+```bash
+psql -U postgres -c "CREATE DATABASE erp_db;"
+psql -U postgres -d erp_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
 
-### 4. Levantar servidor de desarrollo
-Las tablas y la extensión `pgvector` se autogeneran al iniciar gracias a `init_db()`.
+### 4. Configurar `.env`
+```bash
+cp .env.example .env
+# Edita .env con tus credenciales
+```
+
+### 5. Levantar el servidor
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
-> *Nota: Al arrancar por primera vez, el sistema creará usuarios base como `admin`, `docente1`, `psico1`, etc.*
+
+> Al iniciar por primera vez se crean automáticamente las tablas y usuarios base: `admin/admin123`, `docente1/doc123`, `psico1/psico123`, `padre1/padre123`, `secretario1/sec123`.
+
+### 6. Documentación interactiva
+```
+http://localhost:8000/docs
+```
 
 ---
 
 ## 🔄 CI/CD Pipeline
 
-Se utiliza **GitHub Actions** (`.github/workflows/`) para realizar despliegues automáticos (CD) hacia **Google Cloud Run**.
-
-1. **Trigger**: Push a la rama `main`.
-2. **Build Docker**: Se construye el `Dockerfile` del backend.
-3. **Push Artifact**: Se almacena en *Google Artifact Registry*.
-4. **Deploy**: Cloud Run levanta la nueva imagen e inyecta los secretos de entorno mapeados desde GitHub.
-
----
-
-## 🧠 Base de Datos e IA
-
-### PostgreSQL Serverless (Neon) + pgvector
-En lugar de una base de datos vectorial separada (como Chroma), este proyecto consolida sus datos transaccionales (ORM con SQLAlchemy) y sus **embeddings vectoriales** en la misma base PostgreSQL gracias a la extensión `pgvector`. 
-Esto reduce latencia y permite búsquedas híbridas exactas en un solo lugar.
-
-### Orquestación de Agentes
-El directorio `agents/` contiene grafos de estado de **LangGraph** (`orchestrator.py`, `subagents.py`). Cada nodo del grafo es una función Python (un "Agente") que interactúa con las herramientas del sistema o con un LLM, permitiendo procesos de reflexión, búsqueda de contexto en BBDD y validación antes de devolver la respuesta al frontend.
+```text
+Push a main
+  └─▶ Build Docker Image
+        └─▶ Push a Google Artifact Registry
+              └─▶ Deploy a Cloud Run
+                    └─▶ Inyección de Secrets desde GitHub Secrets
+```
 
 ---
 
@@ -223,23 +421,42 @@ El directorio `agents/` contiene grafos de estado de **LangGraph** (`orchestrato
 
 ```text
 backend/
-├── .github/workflows/    # Pipelines de CI/CD para Google Cloud Run
-├── agents/               # Lógica de Inteligencia Artificial (LangGraph)
-│   ├── orchestrator.py   # Grafo principal de agentes
-│   └── subagents.py      # Agentes especialistas (Ej: corrector, psicólogo)
-├── auth/                 # Módulo de Seguridad
-│   └── security.py       # JWT, hashing, validación OAuth2
-├── core/                 # Configuraciones Globales
-│   └── tracing.py        # Logs y tiempos de ejecución
-├── models/               # Capa de Datos (SQLAlchemy)
-│   └── database.py       # Esquemas, conexión a Neon y pgvector
-├── routers/              # Controladores (Endpoints REST)
-│   ├── api.py            # Endpoints generales
-│   ├── deep_agents.py    # IA asíncrona
-│   └── secretaria.py     # Endpoints administrativos
-├── Dockerfile            # Configuración para contenedor de producción
-├── main.py               # Punto de entrada de FastAPI y Middlewares
-├── requirements.txt      # Dependencias PIP
+├── .github/
+│   └── workflows/
+│       └── deploy.yml             # CI/CD → Google Cloud Run
+│
+├── agents/                        # 🤖 IA: LangGraph + Swarm MCP
+│   ├── orchestrator.py            # Grafo principal + Redis Semantic Cache
+│   ├── subagents.py               # Swarm agents + tools (MCP Router)
+│   └── deep_agents/
+│       └── psychologist_agent.py  # LangGraph flow del psicólogo
+│
+├── auth/
+│   └── security.py                # JWT, bcrypt, RBAC
+│
+├── core/
+│   ├── antigravity.py             # SharedMemory, EventBus SSE, AgentGraph
+│   ├── vector_store.py            # PGVector RAG (upsert + semantic_search)
+│   ├── ocr_engine.py              # Motor OCR Tesseract + validación PIL
+│   ├── tasks.py                   # Celery tasks (procesamiento batch)
+│   └── tracing.py                 # Logs JSON, Audit Events, X-Trace-ID
+│
+├── models/
+│   └── database.py                # SQLAlchemy models + init_db()
+│
+├── routers/
+│   ├── api.py                     # +50 endpoints: alumnos, notas, MINEDU...
+│   ├── deep_agents.py             # IA pesada: sílabos, exámenes, BI, OCR
+│   └── secretaria.py              # Caja, vouchers, admisiones
+│
+├── schemas/
+│   └── mcp.py                     # Pydantic schemas
+│
+├── test/                          # Scripts de prueba locales (ignorados en Git)
+├── Dockerfile
+├── main.py                        # Entry point FastAPI + Lifespan + Middlewares
+├── requirements.txt
+├── .env.example                   # Plantilla de variables de entorno
 └── README.md
 ```
 
@@ -247,6 +464,8 @@ backend/
 
 <div align="center">
 
-Desarrollado con ❤️ para el ecosistema educativo
+Desarrollado con ❤️ para el ecosistema educativo peruano
+
+**I.E.P. José María Arguedas** · ERP Escolar AI v1.0
 
 </div>
