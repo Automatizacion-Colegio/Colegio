@@ -1387,22 +1387,25 @@ async def get_state(
     current_user: TokenData = Depends(require_role(["ADMIN", "PSICOLOGO", "DOCENTE"]))
 ):
     state = await school_db.get_state()
-    # Inyectar alumnos de la base de datos SQL para que no desaparezcan del panel si se reinicia el JSON
+    # Reconstruir enrolled_students SIEMPRE desde Postgres como fuente de verdad.
+    # Si solo se hace un merge aditivo, los alumnos borrados directamente en la BD
+    # siguen apareciendo en el panel hasta que el servidor se reinicia.
     db_students = db.query(AlumnoDB).all()
-    if "enrolled_students" not in state:
-        state["enrolled_students"] = {}
-        
-    for al in db_students:
-        state["enrolled_students"][al.codigo_est] = {
+
+    # Reconstruir limpio desde Postgres — esto sincroniza borrados en BD
+    state["enrolled_students"] = {
+        al.codigo_est: {
             "nombres": al.nombres,
             "dni": al.dni,
             "nivel": al.nivel,
             "grado": al.grado,
             "seccion": al.seccion,
             "estado_proceso": al.estado,
-            "apoderado": "Apoderado Registrado", # Placeholder since we didn't join UserDB, enough for dashboard
+            "apoderado": "Apoderado Registrado",
             "ap_correo": ""
         }
+        for al in db_students
+    }
     return state
 
 @router.post("/admin/cursos/asignacion_primaria_ia")
