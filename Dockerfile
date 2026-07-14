@@ -24,8 +24,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Deshabilitar el protocolo XET de HuggingFace (requiere auth incluso en modelos públicos).
+# Con esta variable se usa el download HTTP clásico que no necesita token.
+ENV HF_HUB_DISABLE_XET=1
+
 # Pre-descargar el modelo de HuggingFace en la imagen para evitar Cold Starts eternos en Cloud Run
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+RUN pip uninstall -y hf-xet 2>/dev/null || true && \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
 
 # Copiar todo el código del backend al contenedor
 COPY . .
