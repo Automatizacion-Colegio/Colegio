@@ -39,7 +39,7 @@ import uuid
 from routers.api import router as api_router
 from routers.deep_agents import router as deep_agents_router
 from routers.secretaria import router as secretaria_router
-from auth.security import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, get_password_hash
+from auth.security import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, get_password_hash, TokenData, get_current_user
 from models.database import init_db, get_db, SessionLocal, UserDB
 from core.tracing import logger, set_trace_id, log_audit_event
 import asyncio
@@ -131,6 +131,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
     log_audit_event("LOGIN_SUCCESS", user.username, "auth", "SUCCESS", f"Role: {user.role}")
     return {"access_token": access_token, "token_type": "bearer", "role": user.role}
+
+@app.get("/api/auth/verify")
+async def verify_token(current_user: TokenData = Depends(get_current_user)):
+    return {"status": "ok", "user_id": current_user.user_id, "role": current_user.role}
+
 
 
 if __name__ == "__main__":
