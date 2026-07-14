@@ -1411,6 +1411,43 @@ async def get_state(
         }
         for al in db_students
     }
+
+    # RECONSTRUIR notas_trimestrales desde NotaDB
+    notas_db = db.query(NotaDB).all()
+    cursos_db = db.query(CursoDB).all()
+    cursos_map = {c.id: c.nombre for c in cursos_db}
+    
+    notas_dict = {}
+    for n in notas_db:
+        al = next((a for a in db_students if a.id == n.alumno_id), None)
+        c_nombre = cursos_map.get(n.curso_id)
+        if al and c_nombre and n.valor_numerico is not None:
+            if al.codigo_est not in notas_dict:
+                notas_dict[al.codigo_est] = {}
+            if c_nombre not in notas_dict[al.codigo_est]:
+                notas_dict[al.codigo_est][c_nombre] = []
+            notas_dict[al.codigo_est][c_nombre].append(n.valor_numerico)
+    state["notas_trimestrales"] = notas_dict
+
+    # RECONSTRUIR calendario_psicologia desde CitaDB
+    citas_db = db.query(CitaDB).filter(CitaDB.estado == "Pendiente").all()
+    slots = [
+        {"dia": "Lunes", "hora": "08:00 AM"},
+        {"dia": "Lunes", "hora": "10:00 AM"},
+        {"dia": "Martes", "hora": "09:00 AM"},
+        {"dia": "Miércoles", "hora": "08:00 AM"},
+        {"dia": "Jueves", "hora": "11:00 AM"},
+        {"dia": "Viernes", "hora": "09:00 AM"}
+    ]
+    cal = []
+    for s in slots:
+        ocupado = next((c for c in citas_db if c.dia == s["dia"] and c.hora == s["hora"]), None)
+        if ocupado:
+            cal.append({"dia": s["dia"], "hora": s["hora"], "ocupado": True, "codigo_obs": ocupado.codigo_obs})
+        else:
+            cal.append({"dia": s["dia"], "hora": s["hora"], "ocupado": False, "codigo_obs": None})
+    state["calendario_psicologia"] = cal
+
     return state
 
 @router.post("/admin/cursos/asignacion_primaria_ia")

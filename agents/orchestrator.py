@@ -424,63 +424,116 @@ class ColegioOrchestrator:
 
     async def agendar_cita_psicologica(self, data):
         estado = await self.memory.get_state()
-        codigo_obs = self.generar_codigo("OBS", len(estado["observed_students"]))
+        codigo_obs = self.generar_codigo("OBS", len(estado.get("observed_students", {})), "")
 
-        cita_asignada = False
-        for c in estado["calendario_psicologia"]:
-            if c["dia"] == data.dia and c["hora"] == data.hora and not c["ocupado"]:
-                c["ocupado"] = True
-                c["codigo_obs"] = codigo_obs
-                cita_asignada = True
-                break
+        from models.database import SessionLocal, CitaDB
+        db = SessionLocal()
+        try:
+            # Check if cita is taken in Postgres (permitiendo agendar si está Cancelado o Rechazado)
+            ocupado = db.query(CitaDB).filter(
+                CitaDB.dia == data.dia, 
+                CitaDB.hora == data.hora,
+                CitaDB.estado.notin_(["Cancelado", "Rechazado"])
+            ).first()
+            if ocupado:
+                raise HTTPException(status_code=400, detail="El horario seleccionado ya no está disponible.")
 
-        if not cita_asignada:
-            raise HTTPException(status_code=400, detail="El horario seleccionado ya no está disponible.")
+            nueva_cita = CitaDB(
+                codigo_obs=codigo_obs,
+                motivo="Admisión",
+                dia=data.dia,
+                hora=data.hora,
+                estado="Pendiente"
+            )
+            db.add(nueva_cita)
+            db.commit()
 
-        estado["observed_students"][codigo_obs] = {
-            "dni": data.expediente.dni,
-            "nombres": f"{data.expediente.nombres} {data.expediente.apellidos}",
-            "nivel": data.expediente.nivel,
-            "grado": data.expediente.grado,
-            "apoderado": data.expediente.ap_nombre,
-            "ap_correo": data.expediente.ap_correo,
-            "estado_proceso": "En Observación",
-            "datos_originales": data.expediente.model_dump()
-        }
-        await self.memory.set_state(estado)
-        return {"status": "agendado", "codigo_obs": codigo_obs, "mensaje": "Cita confirmada y código generado."}
+            # Compatibilidad con JSON memory local
+            for c in estado.get("calendario_psicologia", []):
+                if c["dia"] == data.dia and c["hora"] == data.hora:
+                    c["ocupado"] = True
+                    c["codigo_obs"] = codigo_obs
+                    break
+
+            if "observed_students" not in estado:
+                estado["observed_students"] = {}
+            estado["observed_students"][codigo_obs] = {
+                "dni": data.expediente.dni,
+                "nombres": f"{data.expediente.nombres} {data.expediente.apellidos}",
+                "nivel": data.expediente.nivel,
+                "grado": data.expediente.grado,
+                "apoderado": data.expediente.ap_nombre,
+                "ap_correo": data.expediente.ap_correo,
+                "estado_proceso": "En Observación",
+                "datos_originales": data.expediente.model_dump()
+            }
+            await self.memory.set_state(estado)
+            return {"status": "agendado", "codigo_obs": codigo_obs, "mensaje": "Cita confirmada en BD y código generado."}
+        finally:
+            db.close()
 
     async def evaluar_psicologico(self, codigo_obs: str, decision: str, observacion: str):
         estado = await self.memory.get_state()
-        if codigo_obs not in estado["observed_students"]:
+        if codigo_obs not in estado.get("observed_students", {}):
             raise HTTPException(status_code=404, detail="Código OBS no encontrado")
 
         alumno = estado["observed_students"][codigo_obs]
 
-        if decision == "Aprobado":
-            codigo_est = self.generar_codigo("EST", len(estado["enrolled_students"]), alumno["nivel"])
-            estado["enrolled_students"][codigo_est] = {
-                "dni": alumno["dni"],
-                "nombres": alumno["nombres"],
-                "nivel": alumno["nivel"],
-                "grado": alumno["grado"],
-                "apoderado": alumno.get("apoderado", ""),
-                "ap_correo": alumno.get("ap_correo", ""),
-                "estado_proceso": "Admitido (Falta Pago)"
-            }
-            del estado["observed_students"][codigo_obs]
-            await self.memory.set_state(estado)
-            return {"status": "aprobado", "codigo_est": codigo_est, "mensaje": f"Aprobado. Obs: {observacion}"}
-        else:
-            estado["rejected_students"][codigo_obs] = {
-                "nombres": alumno["nombres"],
-                "dni": alumno.get("dni", ""),
-                "motivo": observacion or "Rechazado en Entrevista Psicológica",
-                "estado_proceso": "Rechazado"
-            }
-            del estado["observed_students"][codigo_obs]
-            await self.memory.set_state(estado)
-            return {"status": "rechazado", "mensaje": f"Rechazado. Motivo: {observacion}"}
+        from models.database import SessionLocal, AdmisionDB, CitaDB
+        db = SessionLocal()
+        try:
+            # 1. Actualizar CitaDB
+            cita = db.query(CitaDB).filter(CitaDB.codigo_obs == codigo_obs).first()
+            if cita:
+                cita.estado = "Atendido"
+                db.commit()
+
+            # 2. Actualizar AdmisionDB y recuperar codigo_est original
+            admision = db.query(AdmisionDB).filter(AdmisionDB.dni == alumno.get("dni")).first()
+            if not admision:
+                codigo_est = self.generar_codigo("EST", len(estado.get("enrolled_students", {})), alumno["nivel"])
+            else:
+                codigo_est = admision.codigo_est
+
+            if decision == "Aprobado":
+                if admision:
+                    admision.estado_proceso = "Admitido (Falta Pago)"
+                    db.commit()
+                    
+                if "enrolled_students" not in estado:
+                    estado["enrolled_students"] = {}
+                    
+                estado["enrolled_students"][codigo_est] = {
+                    "dni": alumno.get("dni", ""),
+                    "nombres": alumno["nombres"],
+                    "nivel": alumno["nivel"],
+                    "grado": alumno["grado"],
+                    "apoderado": alumno.get("apoderado", ""),
+                    "ap_correo": alumno.get("ap_correo", ""),
+                    "estado_proceso": "Admitido (Falta Pago)"
+                }
+                del estado["observed_students"][codigo_obs]
+                await self.memory.set_state(estado)
+                return {"status": "aprobado", "codigo_est": codigo_est, "mensaje": f"Aprobado. Obs: {observacion}"}
+            else:
+                if admision:
+                    admision.estado_proceso = "Rechazado"
+                    db.commit()
+                    
+                if "rejected_students" not in estado:
+                    estado["rejected_students"] = {}
+                    
+                estado["rejected_students"][codigo_obs] = {
+                    "nombres": alumno["nombres"],
+                    "dni": alumno.get("dni", ""),
+                    "motivo": observacion or "Rechazado en Entrevista Psicológica",
+                    "estado_proceso": "Rechazado"
+                }
+                del estado["observed_students"][codigo_obs]
+                await self.memory.set_state(estado)
+                return {"status": "rechazado", "mensaje": f"Rechazado. Motivo: {observacion}"}
+        finally:
+            db.close()
 
     async def registrar_pago(self, pago: PagoMatricula):
         estado = await self.memory.get_state()
@@ -488,8 +541,8 @@ class ColegioOrchestrator:
             raise HTTPException(status_code=404, detail="Estudiante no encontrado.")
 
         alumno = estado["enrolled_students"][pago.codigo_est]
-        if alumno["estado_proceso"] == "Matriculado":
-            raise HTTPException(status_code=400, detail="Estudiante ya está matriculado.")
+        if alumno["estado_proceso"] != "Admitido (Falta Pago)":
+            raise HTTPException(status_code=400, detail=f"El estudiante no está habilitado para matrícula. Estado actual: {alumno['estado_proceso']}")
 
         # Reemplazado Swarm por un condicional directo para que no demore el pago
         monto_requerido = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
@@ -500,6 +553,18 @@ class ColegioOrchestrator:
         alumno["estado_proceso"] = "Matriculado"
         estado["enrolled_students"][pago.codigo_est] = alumno
         await self.memory.set_state(estado)
+        
+        # Persistir el cambio de estado en AdmisionDB
+        from models.database import SessionLocal, AdmisionDB
+        db = SessionLocal()
+        try:
+            adm = db.query(AdmisionDB).filter(AdmisionDB.codigo_est == pago.codigo_est).first()
+            if adm:
+                adm.estado_proceso = "Matriculado"
+                db.commit()
+        finally:
+            db.close()
+            
         return {"status": "success", "mensaje": "Matrícula completada exitosamente."}
 
     async def registrar_nota(self, registro: RegistroNota):
@@ -529,12 +594,41 @@ class ColegioOrchestrator:
                 f"{alumno['nombres']} - Riesgo en {registro.curso} (Nota: {registro.nota}). Recomendación IA: {respuesta_eval}"
             )
 
-        if registro.codigo_est not in estado["notas_trimestrales"]:
-            estado["notas_trimestrales"][registro.codigo_est] = {}
-        if registro.curso not in estado["notas_trimestrales"][registro.codigo_est]:
-            estado["notas_trimestrales"][registro.codigo_est][registro.curso] = []
+        from models.database import SessionLocal, NotaDB, AlumnoDB, CursoDB
+        db = SessionLocal()
+        try:
+            # 1. Guardar en PostgreSQL para persistencia
+            al = db.query(AlumnoDB).filter(AlumnoDB.codigo_est == registro.codigo_est).first()
+            if not al:
+                raise HTTPException(status_code=404, detail="Estudiante no existe en BD.")
+                
+            c = db.query(CursoDB).filter(CursoDB.nombre == registro.curso, CursoDB.nivel == al.nivel).first()
+            if not c:
+                c = db.query(CursoDB).filter(CursoDB.nombre == registro.curso).first()
+                if not c:
+                    raise HTTPException(status_code=404, detail=f"Curso '{registro.curso}' no encontrado.")
+                    
+            nueva_nota = NotaDB(
+                alumno_id=al.id,
+                curso_id=c.id,
+                docente_id=registro.docente_id or 1,
+                criterio="Asignado por IA",
+                semana="1",
+                valor_numerico=registro.nota,
+                observacion=respuesta_eval
+            )
+            db.add(nueva_nota)
+            db.commit()
 
-        estado["notas_trimestrales"][registro.codigo_est][registro.curso].append(registro.nota)
-        await self.memory.set_state(estado)
+            # 2. Mantener en JSON memory para compatibilidad con código antiguo
+            if registro.codigo_est not in estado["notas_trimestrales"]:
+                estado["notas_trimestrales"][registro.codigo_est] = {}
+            if registro.curso not in estado["notas_trimestrales"][registro.codigo_est]:
+                estado["notas_trimestrales"][registro.codigo_est][registro.curso] = []
+
+            estado["notas_trimestrales"][registro.codigo_est][registro.curso].append(registro.nota)
+            await self.memory.set_state(estado)
+        finally:
+            db.close()
 
         return {"status": "success", "alerta": alerta, "recomendacion": respuesta_eval}

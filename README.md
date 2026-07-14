@@ -309,6 +309,14 @@ Sílabos CNEB, exámenes, justificación de faltas con OCR, orientación vocacio
 - **X-Trace-ID**: UUID único por request para auditoría completa.
 - **OCR Validation**: Imágenes validadas con `PIL.Image.open()` antes del procesamiento.
 
+### 🛡️ Auditoría de Arquitectura y Seguridad (Julio 2026)
+Como parte del proceso de mejora continua, se realizó una auditoría completa de arquitectura resolviendo vulnerabilidades y deudas técnicas en 5 bloques clave:
+1. **Saneamiento del Split-Brain (Persistencia SQL vs LLM RAM):** Las herramientas del LLM (`registrar_nota`, `agendar_cita_psicologica`, `evaluar_psicologico`, `registrar_pago`) ahora escriben transaccionalmente directo a Postgres en lugar de modificar memoria efímera, asegurando 100% de integridad relacional en admisiones y matrículas.
+2. **Vectorización Sincronizada:** La indexación de historiales psicológicos en `PGVector` fue acoplada al `db.commit()` de la cita para garantizar que la memoria a largo plazo de la IA no se desincronice de la BD transaccional.
+3. **Especialización de Docentes:** Se implementó restricción estricta de especialidad y nivel (PRIMARIA/SECUNDARIA) en la creación de docentes, integrando esta validación dinámicamente en el algoritmo del `timetabler.py`.
+4. **Seguridad y Control de Roles Cruzados (IDOR Fix):** Se parcheó una vulnerabilidad IDOR en `/vocational-advisor` garantizando que un padre (`ALUMNO_PADRE`) solo pueda procesar análisis basados en las notas de sus propios hijos. Se verificó que todos los endpoints de *Deep Agents* tengan `Depends(require_role(...))` estricto.
+5. **Limpieza UI e Integridad de BD:** Se eliminó la exposición cruda de la memoria del LLM (Raw JSON) del dashboard administrativo y se purgó la base de datos de registros huérfanos producto de pruebas sin persistencia.
+
 ---
 
 ## 🌐 API Endpoints
@@ -320,7 +328,6 @@ Sílabos CNEB, exámenes, justificación de faltas con OCR, orientación vocacio
 | `Secretaría` | `/api/secretaria` | Caja, admisiones, OCR de vouchers |
 | `Deep Agents` | `/api/deep-agents` | IA pesada: sílabos, exámenes, BI, psicólogo |
 
-> 📘 Documentación interactiva en `/docs` (Swagger UI) al levantar el servidor.
 
 ---
 

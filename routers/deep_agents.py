@@ -277,7 +277,13 @@ async def vocational_advisor(
     current_user: TokenData = Depends(require_role(["ALUMNO_PADRE", "DOCENTE", "ADMIN"]))
 ):
     try:
-        from models.database import NotaDB, CursoDB
+        from models.database import NotaDB, CursoDB, AlumnoDB
+        
+        if current_user.role == "ALUMNO_PADRE":
+            alumno = db.query(AlumnoDB).filter(AlumnoDB.id == request.alumno_id).first()
+            if not alumno or alumno.apoderado_id != current_user.user_id:
+                raise HTTPException(status_code=403, detail="No tienes permiso para ver datos de este alumno.")
+
         # Recopilamos las notas reales del alumno para formar su perfil
         notas = db.query(NotaDB).filter(NotaDB.alumno_id == request.alumno_id).all()
         if not notas:
