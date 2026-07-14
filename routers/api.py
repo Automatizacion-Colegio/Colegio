@@ -16,7 +16,7 @@ from schemas.sse import StreamChatRequest
 from agents.orchestrator import ColegioOrchestrator
 from core.antigravity import school_db, event_bus, agent_graph, telemetry_store, sse_manager
 from core.tasks import procesar_admision_batch, celery_app
-from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB
+from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB
 from agents.subagents import ag_monitor
 
 
@@ -240,9 +240,14 @@ async def admin_generar_horarios(
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
     try:
-        generate_timetables(db, target_nivel=nivel)
+        resultado = generate_timetables(db, target_nivel=nivel)
         msg = f"Horarios de {nivel} generados" if nivel else "Horarios generados"
-        return {"message": f"{msg} óptimamente sin conflictos."}
+        return {
+            "message": f"{msg} correctamente.",
+            "bloques_sin_docente": resultado.get("bloques_libres", 0),
+            "advertencias": resultado.get("advertencias", []),
+            "estado": "OK" if resultado.get("conflictos_resueltos") else "PARCIAL"
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1458,6 +1463,28 @@ async def list_cursos_admin(db: Session = Depends(get_db), current_user: TokenDa
     cursos = db.query(CursoDB).all()
     return [{"id": c.id, "nombre": c.nombre, "nivel": c.nivel, "grado": c.grado, "seccion": c.seccion or "A", "docente_id": c.docente_id} for c in cursos]
 
+@router.get("/cursos/nombres-unicos")
+async def get_cursos_nombres_unicos(
+    nivel: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role(["ADMIN"]))
+):
+    """
+    Devuelve nombres únicos de cursos agrupados por nivel.
+    Alimenta el multi-select de Especialización en el formulario de registro de docente.
+    """
+    query = db.query(CursoDB.nombre, CursoDB.nivel).distinct()
+    if nivel:
+        query = query.filter(CursoDB.nivel == nivel.upper())
+    rows = query.all()
+    agrupado = {}
+    for nombre, niv in rows:
+        agrupado.setdefault(nombre, set()).add(niv)
+    return [
+        {"nombre": nombre, "niveles": sorted(list(niveles))}
+        for nombre, niveles in sorted(agrupado.items())
+    ]
+
 
 class BatchAdmisionRequest(BaseModel):
     archivos_ids: list[str]
@@ -1490,6 +1517,9 @@ class UserCreate(BaseModel):
     password: str
     role: str
     nivel_asignado: Optional[str] = None
+    especializaciones: Optional[List[dict]] = None
+    # When role == DOCENTE: [{"curso_nombre": "Matemática", "nivel": "SECUNDARIA"}, ...]
+    # Obligatorio para DOCENTE, ignorado para otros roles
 
 
 @router.post("/admin/users")
@@ -1502,6 +1532,42 @@ async def create_user(
         raise HTTPException(status_code=400, detail="Rol inválido. Solo DOCENTE, PSICOLOGO o SECRETARIO.")
     if db.query(UserDB).filter(UserDB.username == user.username).first():
         raise HTTPException(status_code=400, detail="El usuario ya existe.")
+
+    # Validar especializaciones para DOCENTE
+    if user.role == "DOCENTE":
+        if not user.especializaciones:
+            raise HTTPException(
+                status_code=422,
+                detail="Se requiere al menos una especialización para registrar un docente."
+            )
+        nivel_docente = (user.nivel_asignado or "").upper()
+        if nivel_docente not in ["PRIMARIA", "SECUNDARIA"]:
+            raise HTTPException(
+                status_code=422,
+                detail="nivel_asignado debe ser PRIMARIA o SECUNDARIA para docentes."
+            )
+        for esp in user.especializaciones:
+            curso_nombre = esp.get("curso_nombre", "").strip()
+            nivel_esp = esp.get("nivel", "").strip().upper()
+            if not curso_nombre or not nivel_esp:
+                raise HTTPException(status_code=422, detail="Cada especialización requiere 'curso_nombre' y 'nivel'.")
+            if nivel_esp not in ["PRIMARIA", "SECUNDARIA"]:
+                raise HTTPException(status_code=422, detail=f"El nivel de especialización debe ser PRIMARIA o SECUNDARIA, no '{nivel_esp}'.")
+            if nivel_esp != nivel_docente:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"La especialización '{curso_nombre}' es de nivel {nivel_esp}, pero el docente es de nivel {nivel_docente}. Los docentes peruanos se forman en un único nivel."
+                )
+            existe_curso = db.query(CursoDB).filter(
+                CursoDB.nombre == curso_nombre,
+                CursoDB.nivel == nivel_esp
+            ).first()
+            if not existe_curso:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"El curso '{curso_nombre}' (nivel {nivel_esp}) no existe en el sistema. Registre el curso primero."
+                )
+
     new_user = UserDB(
         username=user.username,
         hashed_password=get_password_hash(user.password),
@@ -1510,6 +1576,19 @@ async def create_user(
     )
     db.add(new_user)
     db.commit()
+    db.refresh(new_user)
+
+    # Insertar especializaciones si es DOCENTE
+    if user.role == "DOCENTE" and user.especializaciones:
+        for esp in user.especializaciones:
+            nueva_esp = DocenteEspecialidadDB(
+                docente_id=new_user.id,
+                curso_nombre=esp["curso_nombre"].strip(),
+                nivel=esp["nivel"].strip().upper()
+            )
+            db.add(nueva_esp)
+        db.commit()
+
     return {"message": f"Cuenta {user.username} ({user.role}) creada con éxito."}
 
 @router.get("/admin/users")
@@ -1518,7 +1597,22 @@ async def get_users(
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
     users = db.query(UserDB).filter(UserDB.role.in_(["DOCENTE", "PSICOLOGO", "SECRETARIO"])).all()
-    return [{"id": u.id, "username": u.username, "role": u.role, "is_active": u.is_active, "nivel_asignado": u.nivel_asignado} for u in users]
+    result = []
+    for u in users:
+        data = {
+            "id": u.id, "username": u.username, "role": u.role,
+            "is_active": u.is_active, "nivel_asignado": u.nivel_asignado,
+            "especializaciones": []
+        }
+        if u.role == "DOCENTE":
+            esps = db.query(DocenteEspecialidadDB).filter(
+                DocenteEspecialidadDB.docente_id == u.id
+            ).all()
+            data["especializaciones"] = [
+                {"curso_nombre": e.curso_nombre, "nivel": e.nivel} for e in esps
+            ]
+        result.append(data)
+    return result
 
 @router.post("/admin/users/{user_id}/toggle_status")
 async def toggle_user_status(
@@ -1836,7 +1930,7 @@ async def get_minedu_capacidades(
 async def get_minedu_estandares(
     curso: Optional[str] = None,
     nivel: Optional[str] = None,
-    ciclo: Optional[str] = None,
+    grado: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
     query = db.query(EstandarMINEDUDB)
@@ -1844,10 +1938,10 @@ async def get_minedu_estandares(
         query = query.filter(EstandarMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
     if nivel:
         query = query.filter(EstandarMINEDUDB.nivel.ilike(f"%{nivel}%"))
-    if ciclo:
-        query = query.filter(EstandarMINEDUDB.ciclo.ilike(f"%{ciclo}%"))
+    if grado is not None:
+        query = query.filter(EstandarMINEDUDB.grado == grado)
     resultados = query.all()
-    return [{"id": e.id, "nivel": e.nivel, "ciclo": e.ciclo, "curso_nombre": e.curso_nombre, "descripcion": e.descripcion} for e in resultados]
+    return [{"id": e.id, "nivel": e.nivel, "grado": e.grado, "curso_nombre": e.curso_nombre, "descripcion": e.descripcion} for e in resultados]
 
 @router.get("/minedu_desempenos")
 async def get_minedu_desempenos(

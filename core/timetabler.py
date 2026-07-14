@@ -1,19 +1,41 @@
 from sqlalchemy.orm import Session
-from models.database import CursoDB, HorarioDB, TutorDB
+from models.database import CursoDB, HorarioDB, TutorDB, DocenteEspecialidadDB, UserDB
 import random
+import logging
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
 BLOQUES = [
     ("08:00", "08:45"),
     ("08:45", "09:30"),
     ("09:30", "10:15"),
-    ("10:45", "11:30"), # Recreo 10:15 - 10:45
+    ("10:45", "11:30"),  # Recreo 10:15 - 10:45
     ("11:30", "12:15"),
     ("12:15", "13:00"),
-    ("13:15", "14:00")  # Recreo 13:00 - 13:15
+    ("13:15", "14:00")   # Recreo 13:00 - 13:15
 ]
 
-def generate_timetables(db: Session, target_nivel: str = None):
+
+def _get_docentes_con_especialidad(db: Session, curso_nombre: str, nivel: str) -> list:
+    """
+    Retorna lista de docente_id que tienen especialización en (curso_nombre, nivel).
+    Solo acepta PRIMARIA o SECUNDARIA — no existe nivel AMBOS.
+    """
+    esps = db.query(DocenteEspecialidadDB).filter(
+        DocenteEspecialidadDB.curso_nombre == curso_nombre,
+        DocenteEspecialidadDB.nivel == nivel.upper()
+    ).all()
+    return [e.docente_id for e in esps]
+
+
+def generate_timetables(db: Session, target_nivel: str = None) -> dict:
+    """
+    Genera horarios para todas las aulas (o solo el nivel indicado).
+    Asigna docentes ÚNICAMENTE si tienen la especialización correspondiente.
+    Retorna un dict con advertencias para que el endpoint las muestre al admin.
+    """
     # Borrar horarios existentes
     if target_nivel:
         db.query(HorarioDB).filter(HorarioDB.nivel == target_nivel).delete()
@@ -21,41 +43,60 @@ def generate_timetables(db: Session, target_nivel: str = None):
         db.query(HorarioDB).delete()
     db.commit()
 
-    # Obtener todas las aulas (nivel, grado, seccion) basadas en cursos
     if target_nivel:
         cursos_db = db.query(CursoDB).filter(CursoDB.nivel == target_nivel).all()
     else:
         cursos_db = db.query(CursoDB).all()
-        
+
     if not cursos_db:
-        return
+        return {"conflictos_resueltos": True, "bloques_libres": 0, "advertencias": []}
 
     aulas = list(set((c.nivel, c.grado, c.seccion) for c in cursos_db))
 
-    # Organizar cursos por aula
     cursos_por_aula = {}
     for c in cursos_db:
         key = (c.nivel, c.grado, c.seccion)
-        if key not in cursos_por_aula:
-            cursos_por_aula[key] = []
-        cursos_por_aula[key].append(c)
+        cursos_por_aula.setdefault(key, []).append(c)
 
+    # Pre-computar: (curso_nombre, nivel) → [docente_id, ...] con especialización
+    combinaciones_unicas = {(c.nombre, c.nivel) for c in cursos_db}
+    docentes_por_curso = {
+        (nombre, nivel_c): _get_docentes_con_especialidad(db, nombre, nivel_c)
+        for (nombre, nivel_c) in combinaciones_unicas
+    }
+
+    # Advertencias previas: cursos sin ningún docente especializado
+    advertencias_previas = []
+    for aula in aulas:
+        nivel, grado, seccion = aula
+        for c in cursos_por_aula[aula]:
+            docs = docentes_por_curso.get((c.nombre, nivel), [])
+            if not docs:
+                msg = (f"SIN DOCENTE ESPECIALIZADO: '{c.nombre}' para "
+                       f"{grado}° {seccion} de {nivel}")
+                if msg not in advertencias_previas:
+                    advertencias_previas.append(msg)
+                    logger.warning(f"Timetabler ⚠️  {msg}")
+
+    # Contador de horas por docente (para balanceo de carga)
+    # horas_docente[docente_id] = cantidad de bloques ya asignados en este intento
     MAX_ATTEMPTS = 200
     mejor_conflictos = float('inf')
     mejor_horario = []
-    
+    mejor_advertencias_intento = []
+
     for attempt in range(MAX_ATTEMPTS):
-        ocupacion_docentes = {}
+        ocupacion_docentes = {}   # (docente_id, dia_idx, bloque_idx) → True
+        horas_docente = defaultdict(int)  # docente_id → bloques asignados (balanceo)
         horarios_temporales = []
         conflictos_en_intento = 0
+        advertencias_intento = []
 
-        # Requerimientos por aula
+        # Calcular requerimientos de horas por curso/aula
         requerimientos = {}
         for aula in aulas:
             req = {c.id: 0 for c in cursos_por_aula[aula]}
             ca = cursos_por_aula[aula]
-            
-            # Distribución de horas
             horas_asignadas = 0
             for c in ca:
                 nombre = c.nombre.lower()
@@ -64,20 +105,17 @@ def generate_timetables(db: Session, target_nivel: str = None):
                 elif any(x in nombre for x in ["ciencia", "personal"]):
                     horas = 4
                 elif any(x in nombre for x in ["inglés", "educación física", "religión"]):
-                    horas = 2 # Especialistas dictan 2 horas por aula (2 * 12 aulas = 24 horas < 35 horas max)
+                    horas = 2
                 else:
                     horas = 2
                 req[c.id] = horas
                 horas_asignadas += horas
-            
-            # Si faltan horas para llegar a 35, se las damos a matemática/comunicación
+
             idx = 0
             while horas_asignadas < 35:
                 req[ca[idx % len(ca)].id] += 1
                 horas_asignadas += 1
                 idx += 1
-            
-            # Si sobran horas, quitamos de los que tienen más de 2
             while horas_asignadas > 35:
                 for c in ca:
                     if req[c.id] > 2:
@@ -85,10 +123,9 @@ def generate_timetables(db: Session, target_nivel: str = None):
                         horas_asignadas -= 1
                         if horas_asignadas == 35:
                             break
-                            
+
             requerimientos[aula] = req
 
-        # Llenar bloque por bloque para distribuir las restricciones
         for d_idx, dia in enumerate(DIAS):
             for b_idx, (hora_inicio, hora_fin) in enumerate(BLOQUES):
                 aulas_mezcladas = aulas.copy()
@@ -97,66 +134,80 @@ def generate_timetables(db: Session, target_nivel: str = None):
                 for aula in aulas_mezcladas:
                     nivel, grado, seccion = aula
                     cursos_aula = cursos_por_aula[aula]
-                    
-                    # Filtrar cursos que aún necesitan horas y cuyo docente está libre
-                    opciones = [
-                        c for c in cursos_aula 
-                        if requerimientos[aula][c.id] > 0 and 
-                        (not c.docente_id or not ocupacion_docentes.get((c.docente_id, d_idx, b_idx)))
-                    ]
 
-                    if not opciones:
-                        # Fallback: Assign a free study block if no teacher is available
+                    # Para cada curso con horas pendientes, encontrar docente disponible con especialización
+                    opciones_con_docente = []
+                    for c in cursos_aula:
+                        if requerimientos[aula][c.id] <= 0:
+                            continue
+
+                        docs_habilitados = docentes_por_curso.get((c.nombre, nivel), [])
+                        if not docs_habilitados:
+                            continue  # ya advertido arriba
+
+                        # Docentes libres en este slot
+                        docs_libres = [
+                            d for d in docs_habilitados
+                            if not ocupacion_docentes.get((d, d_idx, b_idx))
+                        ]
+                        if docs_libres:
+                            opciones_con_docente.append((c, docs_libres))
+
+                    if not opciones_con_docente:
+                        adv = (f"Bloque libre: {grado}°{seccion} {nivel} "
+                               f"{dia} {hora_inicio}")
+                        advertencias_intento.append(adv)
                         horarios_temporales.append(HorarioDB(
-                            nivel=nivel,
-                            grado=grado,
-                            seccion=seccion,
-                            dia=dia,
-                            hora_inicio=hora_inicio,
-                            hora_fin=hora_fin,
-                            curso_id=None,
-                            docente_id=None
+                            nivel=nivel, grado=grado, seccion=seccion,
+                            dia=dia, hora_inicio=hora_inicio, hora_fin=hora_fin,
+                            curso_id=None, docente_id=None
                         ))
                         conflictos_en_intento += 1
                         continue
 
-                    # Sort by how constrained the teacher is (number of remaining hours for that teacher across all aulas)
-                    # To keep it simple and fast, we just pick randomly but ensure we don't strictly block specialists from the morning.
-                    # Prioritizar cursos pesados en la mañana (pero con probabilidad, no estricto)
-                    pesados = [c for c in opciones if any(x in c.nombre.lower() for x in ["matem", "comunica", "física", "química", "ciencia"])]
-                    livianos = [c for c in opciones if c not in pesados]
+                    # Priorizar cursos pesados en bloques de mañana
+                    pesados = [(c, dl) for c, dl in opciones_con_docente
+                               if any(x in c.nombre.lower() for x in ["matem", "comunica", "física", "química", "ciencia"])]
+                    livianos = [(c, dl) for c, dl in opciones_con_docente if (c, dl) not in pesados]
 
                     if b_idx < 3 and pesados and random.random() < 0.6:
-                        c = random.choice(pesados)
+                        curso_sel, docs_libres_sel = random.choice(pesados)
                     elif livianos and random.random() < 0.8:
-                        c = random.choice(livianos)
+                        curso_sel, docs_libres_sel = random.choice(livianos)
                     else:
-                        c = random.choice(opciones)
+                        curso_sel, docs_libres_sel = random.choice(opciones_con_docente)
 
-                    requerimientos[aula][c.id] -= 1
-                    if c.docente_id:
-                        ocupacion_docentes[(c.docente_id, d_idx, b_idx)] = True
+                    # BALANCEO DE CARGA: elegir docente con menos horas asignadas hasta ahora
+                    docente_sel = min(docs_libres_sel, key=lambda d: horas_docente[d])
+
+                    requerimientos[aula][curso_sel.id] -= 1
+                    ocupacion_docentes[(docente_sel, d_idx, b_idx)] = True
+                    horas_docente[docente_sel] += 1
 
                     horarios_temporales.append(HorarioDB(
-                        nivel=nivel,
-                        grado=grado,
-                        seccion=seccion,
-                        dia=dia,
-                        hora_inicio=hora_inicio,
-                        hora_fin=hora_fin,
-                        curso_id=c.id,
-                        docente_id=c.docente_id
+                        nivel=nivel, grado=grado, seccion=seccion,
+                        dia=dia, hora_inicio=hora_inicio, hora_fin=hora_fin,
+                        curso_id=curso_sel.id,
+                        docente_id=docente_sel
                     ))
-                
-        # Guardar el mejor intento (el que tiene menos conflictos)
+
         if conflictos_en_intento < mejor_conflictos:
             mejor_conflictos = conflictos_en_intento
             mejor_horario = horarios_temporales
-            
+            mejor_advertencias_intento = advertencias_intento
+
         if mejor_conflictos == 0:
             break
 
-    # Guardar en DB el mejor horario encontrado
     for h in mejor_horario:
         db.add(h)
     db.commit()
+
+    # Deduplicar advertencias
+    todas_advertencias = list(dict.fromkeys(advertencias_previas + mejor_advertencias_intento))
+
+    return {
+        "conflictos_resueltos": mejor_conflictos == 0,
+        "bloques_libres": mejor_conflictos,
+        "advertencias": todas_advertencias
+    }

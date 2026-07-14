@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 
@@ -26,6 +26,16 @@ class UserDB(Base):
     role = Column(String) # ADMIN, DOCENTE, PSICOLOGO, ALUMNO_PADRE, SECRETARIO
     nivel_asignado = Column(String, nullable=True) # PRIMARIA o SECUNDARIA (solo para DOCENTES)
     is_active = Column(Boolean, default=True)
+
+class DocenteEspecialidadDB(Base):
+    __tablename__ = "docente_especialidad"
+    id = Column(Integer, primary_key=True, index=True)
+    docente_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    curso_nombre = Column(String, nullable=False)
+    nivel = Column(String, nullable=False)  # PRIMARIA o SECUNDARIA únicamente
+    __table_args__ = (
+        UniqueConstraint("docente_id", "curso_nombre", "nivel", name="uq_docente_especialidad"),
+    )
 
 class CursoDB(Base):
     __tablename__ = "cursos"
@@ -149,7 +159,7 @@ class EstandarMINEDUDB(Base):
     __tablename__ = "minedu_estandares"
     id = Column(Integer, primary_key=True, index=True)
     nivel = Column(String, index=True)
-    ciclo = Column(String, index=True)
+    grado = Column(Integer, index=True)
     curso_nombre = Column(String, index=True)
     descripcion = Column(Text)
 
