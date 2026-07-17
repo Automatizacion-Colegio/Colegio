@@ -40,7 +40,7 @@ from routers.api import router as api_router
 from routers.deep_agents import router as deep_agents_router
 from routers.secretaria import router as secretaria_router
 from auth.security import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, get_password_hash, TokenData, get_current_user
-from models.database import init_db, get_db, SessionLocal, UserDB
+from models.database import init_db, get_db, SessionLocal, UserDB, AnioEscolarDB
 from core.tracing import logger, set_trace_id, log_audit_event
 import asyncio
 
@@ -55,11 +55,15 @@ def _startup_sync():
     init_db()
     db = SessionLocal()
     if not db.query(UserDB).filter(UserDB.username == "admin").first():
-        db.add(UserDB(username="admin", hashed_password=get_password_hash("admin123"), role="ADMIN"))
-        db.add(UserDB(username="docente1", hashed_password=get_password_hash("doc123"), role="DOCENTE"))
-        db.add(UserDB(username="psico1", hashed_password=get_password_hash("psico123"), role="PSICOLOGO"))
-        db.add(UserDB(username="padre1", hashed_password=get_password_hash("padre123"), role="ALUMNO_PADRE"))
-        db.add(UserDB(username="secretario1", hashed_password=get_password_hash("sec123"), role="SECRETARIO"))
+        db.add(UserDB(username="admin", hashed_password=get_password_hash("admin123"), role="ADMIN", nombre_completo="Administrador Sistema"))
+        db.add(UserDB(username="docente1", hashed_password=get_password_hash("doc123"), role="DOCENTE", nombre_completo="Docente Prueba"))
+        db.add(UserDB(username="psico1", hashed_password=get_password_hash("psico123"), role="PSICOLOGO", nombre_completo="Psicologo Prueba"))
+        db.add(UserDB(username="padre1", hashed_password=get_password_hash("padre123"), role="ALUMNO_PADRE", nombre_completo="Padre Prueba"))
+        db.add(UserDB(username="secretario1", hashed_password=get_password_hash("sec123"), role="SECRETARIO", nombre_completo="Secretario Prueba"))
+        db.commit()
+        
+    if not db.query(AnioEscolarDB).filter(AnioEscolarDB.activo == True).first():
+        db.add(AnioEscolarDB(anio=2026, activo=True))
         db.commit()
     db.close()
 
