@@ -395,6 +395,27 @@ async def admin_generar_horarios(
             )
 
         resultado = generate_timetables(db, target_nivel=nivel)
+        
+        # Sincronizar CursoDB.docente_id con el horario generado para Secundaria (y otros)
+        horarios_generados = db.query(HorarioDB).filter(
+            HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None),
+            HorarioDB.nivel == nivel if nivel else True,
+            HorarioDB.curso_id.isnot(None),
+            HorarioDB.docente_id.isnot(None)
+        ).all()
+        
+        from collections import defaultdict
+        curso_docentes = defaultdict(lambda: defaultdict(int))
+        for h in horarios_generados:
+            curso_docentes[h.curso_id][h.docente_id] += 1
+            
+        for cid, doc_counts in curso_docentes.items():
+            best_doc = max(doc_counts.items(), key=lambda x: x[1])[0]
+            curso = db.query(CursoDB).filter(CursoDB.id == cid).first()
+            if curso and curso.docente_id != best_doc:
+                curso.docente_id = best_doc
+        db.commit()
+
         msg = f"Horarios de {nivel} generados" if nivel else "Horarios generados"
         return {
             "message": f"{msg} correctamente.",
@@ -1807,7 +1828,8 @@ Responde ÚNICAMENTE con un JSON en el siguiente formato, sin markdown ni comill
 async def list_cursos_admin(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
     anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     cursos = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
-    return [{"id": c.id, "nombre": c.nombre, "nivel": c.nivel, "grado": c.grado, "seccion": c.seccion or "A", "docente_id": c.docente_id} for c in cursos]
+    users = {u.id: u.username for u in db.query(UserDB).all()}
+    return [{"id": c.id, "nombre": c.nombre, "nivel": c.nivel, "grado": c.grado, "seccion": c.seccion or "A", "docente_id": c.docente_id, "docente_nombre": users.get(c.docente_id) if c.docente_id else None} for c in cursos]
 
 @router.get("/cursos/nombres-unicos")
 async def get_cursos_nombres_unicos(
