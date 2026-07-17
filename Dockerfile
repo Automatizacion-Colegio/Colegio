@@ -42,5 +42,5 @@ RUN pip uninstall -y hf-xet 2>/dev/null || true && \
 COPY . .
 
 # Cloud Run automáticamente inyecta la variable de entorno $PORT (usualmente 8080)
-# Así que usamos uvicorn escuchando en 0.0.0.0 y ese puerto.
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# Ejecutamos las migraciones primero y luego levantamos uvicorn.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
