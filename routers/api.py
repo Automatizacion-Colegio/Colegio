@@ -50,7 +50,6 @@ from agents.subagents import ag_monitor
 router = APIRouter()
 orchestrator = ColegioOrchestrator(school_db, event_bus, agent_graph)
 from agents.orchestrator import swarm_client
-
 class ConfigMatricula(BaseModel):
     primaria: float
     secundaria: float
@@ -58,10 +57,21 @@ class ConfigMatricula(BaseModel):
     cupos_aula_secundaria: int = 30
     precio_recuperacion_primaria: float = 0.0
     precio_recuperacion_secundaria: float = 0.0
+    inicio_matricula: str | None = None
+    fin_matricula: str | None = None
+    limite_rematricula: str | None = None
 
 @router.get("/config")
 async def get_config(db: Session = Depends(get_db)):
     config = db.query(ConfiguracionGlobalDB).first()
+    anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.activo == True).first()
+    
+    dates = {
+        "inicio_matricula": anio.inicio_matricula if anio else None,
+        "fin_matricula": anio.fin_matricula if anio else None,
+        "limite_rematricula": anio.limite_rematricula if anio else None
+    }
+    
     if not config:
         return {
             "primaria": 500.0, 
@@ -69,7 +79,8 @@ async def get_config(db: Session = Depends(get_db)):
             "cupos_aula_primaria": 30,
             "cupos_aula_secundaria": 30,
             "precio_recuperacion_primaria": 0.0,
-            "precio_recuperacion_secundaria": 0.0
+            "precio_recuperacion_secundaria": 0.0,
+            **dates
         }
     return {
         "primaria": config.precio_matricula_primaria, 
@@ -77,7 +88,8 @@ async def get_config(db: Session = Depends(get_db)):
         "cupos_aula_primaria": config.cupos_primaria,
         "cupos_aula_secundaria": config.cupos_secundaria,
         "precio_recuperacion_primaria": config.precio_recuperacion_primaria,
-        "precio_recuperacion_secundaria": config.precio_recuperacion_secundaria
+        "precio_recuperacion_secundaria": config.precio_recuperacion_secundaria,
+        **dates
     }
 
 @router.post("/admin/config")
@@ -93,6 +105,13 @@ async def set_config(config_data: ConfigMatricula, db: Session = Depends(get_db)
     config.cupos_secundaria = config_data.cupos_aula_secundaria
     config.precio_recuperacion_primaria = config_data.precio_recuperacion_primaria
     config.precio_recuperacion_secundaria = config_data.precio_recuperacion_secundaria
+    
+    anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.activo == True).first()
+    if anio:
+        anio.inicio_matricula = config_data.inicio_matricula
+        anio.fin_matricula = config_data.fin_matricula
+        anio.limite_rematricula = config_data.limite_rematricula
+        
     db.commit()
     
     return {"message": "Configuración global actualizada en la base de datos."}
