@@ -260,17 +260,35 @@ async def agendar_cita(data: AgendarCita):
 
 
 @router.get("/admision/seguimiento/{codigo}")
-async def seguimiento_expediente(codigo: str):
-    state = await school_db.get_state()
+async def seguimiento_expediente(codigo: str, db: Session = Depends(get_db)):
+    admision = db.query(AdmisionDB).filter(AdmisionDB.codigo_est == codigo).first()
+    if admision:
+        return {"status": "encontrado", "data": {
+            "dni": admision.dni,
+            "nombres": f"{admision.nombres} {admision.apellidos}",
+            "nivel": admision.nivel,
+            "grado": admision.grado,
+            "apoderado": admision.ap_nombre,
+            "ap_correo": admision.ap_correo,
+            "estado_proceso": admision.estado_proceso
+        }}
 
-    if codigo in state.get("enrolled_students", {}):
-        return {"status": "encontrado", "data": state["enrolled_students"][codigo]}
-
-    if codigo in state.get("observed_students", {}):
-        return {"status": "encontrado", "data": state["observed_students"][codigo]}
-
-    if codigo in state.get("rejected_students", {}):
-        return {"status": "encontrado", "data": state["rejected_students"][codigo]}
+    cita = db.query(CitaDB).filter(CitaDB.codigo_obs == codigo).first()
+    if cita and cita.dni_postulante:
+        admision = db.query(AdmisionDB).filter(AdmisionDB.dni == cita.dni_postulante).first()
+        if admision:
+            return {"status": "encontrado", "data": {
+                "dni": admision.dni,
+                "nombres": f"{admision.nombres} {admision.apellidos}",
+                "nivel": admision.nivel,
+                "grado": admision.grado,
+                "apoderado": admision.ap_nombre,
+                "ap_correo": admision.ap_correo,
+                "estado_proceso": admision.estado_proceso,
+                "cita_dia": cita.dia,
+                "cita_hora": cita.hora,
+                "cita_estado": cita.estado
+            }}
 
     raise HTTPException(status_code=404, detail="Código de expediente no encontrado.")
 
@@ -974,19 +992,18 @@ async def pagar_matricula(
     
     # Auto-crear cuenta de padre e insertar alumno si el expediente es válido
     alumno = db.query(AlumnoDB).filter(AlumnoDB.codigo_est == pago.codigo_est).first()
-    state = await school_db.get_state()
-    data_admision = state.get("enrolled_students", {}).get(pago.codigo_est)
-    
+    data_admision = db.query(AdmisionDB).filter(AdmisionDB.codigo_est == pago.codigo_est).first()
 
     if data_admision:
         if not alumno:
-            # Obtener limites de cupo (El número aplica como límite para CADA sección de ese nivel)
-            config_mat = state.get("config_matricula", {})
-            cupo_maximo = config_mat.get("cupos_aula_primaria", 30) if data_admision["nivel"] == "PRIMARIA" else config_mat.get("cupos_aula_secundaria", 30)
+            config_mat = db.query(ConfiguracionGlobalDB).first()
+            cupo_primaria = config_mat.cupos_primaria if config_mat else 30
+            cupo_secundaria = config_mat.cupos_secundaria if config_mat else 30
+            cupo_maximo = cupo_primaria if data_admision.nivel.upper() == "PRIMARIA" else cupo_secundaria
             
             # Contar alumnos en las secciones A y B del grado al que postula
-            count_a = db.query(AlumnoDB).filter(AlumnoDB.nivel == data_admision["nivel"], AlumnoDB.grado == data_admision["grado"], AlumnoDB.seccion == "A").count()
-            count_b = db.query(AlumnoDB).filter(AlumnoDB.nivel == data_admision["nivel"], AlumnoDB.grado == data_admision["grado"], AlumnoDB.seccion == "B").count()
+            count_a = db.query(AlumnoDB).filter(AlumnoDB.nivel == data_admision.nivel, AlumnoDB.grado == data_admision.grado, AlumnoDB.seccion == "A").count()
+            count_b = db.query(AlumnoDB).filter(AlumnoDB.nivel == data_admision.nivel, AlumnoDB.grado == data_admision.grado, AlumnoDB.seccion == "B").count()
             
             # Decidir sección verificando estrictamente el cupo de CADA sección
             if count_a < cupo_maximo and count_b < cupo_maximo:
@@ -998,14 +1015,14 @@ async def pagar_matricula(
                 seccion_asignada = "B"
             else:
                 # Ambas secciones están llenas
-                raise HTTPException(status_code=400, detail=f"No hay cupos disponibles. Todas las secciones (A y B) de {data_admision['grado']}° grado de {data_admision['nivel']} alcanzaron el límite máximo de {cupo_maximo} alumnos cada una.")
+                raise HTTPException(status_code=400, detail=f"No hay cupos disponibles. Todas las secciones (A y B) de {data_admision.grado}° grado de {data_admision.nivel} alcanzaron el límite máximo de {cupo_maximo} alumnos cada una.")
 
             # Crear registro de alumno en la base de datos SQL
             alumno = AlumnoDB(
-                nombres=data_admision["nombres"],
-                dni=data_admision["dni"],
-                nivel=data_admision["nivel"],
-                grado=data_admision["grado"],
+                nombres=f"{data_admision.nombres} {data_admision.apellidos}",
+                dni=data_admision.dni,
+                nivel=data_admision.nivel,
+                grado=data_admision.grado,
                 seccion=seccion_asignada,
                 estado="Matriculado",
                 codigo_est=pago.codigo_est
@@ -1014,9 +1031,27 @@ async def pagar_matricula(
             db.commit()
             db.refresh(alumno)
             
+            # Crear registro de matricula
+            anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+            if anio_activo:
+                matricula_existente = db.query(MatriculaDB).filter(
+                    MatriculaDB.alumno_id == alumno.id, 
+                    MatriculaDB.anio_escolar_id == anio_activo.id
+                ).first()
+                if not matricula_existente:
+                    nueva_matricula = MatriculaDB(
+                        alumno_id=alumno.id,
+                        anio_escolar_id=anio_activo.id,
+                        nivel=data_admision.nivel,
+                        grado=data_admision.grado,
+                        estado_matricula="CONFIRMADA"
+                    )
+                    db.add(nueva_matricula)
+                    db.commit()
+            
         if not alumno.apoderado_id:
-            nombre_padre = data_admision.get("apoderado", "padre")
-            padre_correo = data_admision.get("ap_correo", "iep.josemariaarguedas.1998@gmail.com")
+            nombre_padre = data_admision.ap_nombre or "padre"
+            padre_correo = data_admision.ap_correo or "iep.josemariaarguedas.1998@gmail.com"
             
             # Crear credenciales usando el primer nombre del padre
             username = nombre_padre.split(" ")[0].lower() + pago.codigo_est[-3:]
