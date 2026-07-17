@@ -241,7 +241,13 @@ class ColegioOrchestrator:
         self.graph = graph
         
     def _enviar_correo_admision(self, destinatario: str, asunto: str, cuerpo: str):
-        if not destinatario: return
+        from models.database import SessionLocal, EmailLogDB
+        db = SessionLocal()
+        error_msg = None
+        estado = "Enviado"
+        if not destinatario: 
+            error_msg = "Destinatario vacío"
+            estado = "Fallido"
         try:
             import smtplib
             from email.mime.text import MIMEText
@@ -251,35 +257,44 @@ class ColegioOrchestrator:
             app_password = os.getenv("SMTP_PASSWORD")
             sender_email = "iep.josemariaarguedas.1998@gmail.com"
             
-            if not app_password: return
+            if not app_password and not error_msg:
+                error_msg = "SMTP_PASSWORD no configurado"
+                estado = "Fallido"
             
-            msg = MIMEMultipart()
-            msg['From'] = sender_email
-            msg['To'] = destinatario
-            msg['Subject'] = asunto
-            msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
-            
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(sender_email, app_password)
-            server.send_message(msg)
-            server.quit()
+            if estado == "Enviado":
+                msg = MIMEMultipart()
+                msg['From'] = sender_email
+                msg['To'] = destinatario
+                msg['Subject'] = asunto
+                msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+                
+                server = smtplib.SMTP('smtp.gmail.com', 587)
+                server.starttls()
+                server.login(sender_email, app_password)
+                server.send_message(msg)
+                server.quit()
         except Exception as e:
+            error_msg = str(e)
+            estado = "Fallido"
             print(f"Error enviando correo a {destinatario}: {e}")
+        finally:
+            log_correo = EmailLogDB(destinatario=destinatario, asunto=asunto, cuerpo=cuerpo, estado=estado, error_msg=error_msg)
+            db.add(log_correo)
+            db.commit()
+            db.close()
+            if error_msg and estado == "Fallido":
+                print(f"Log correo fallido guardado: {error_msg}")
 
     def generar_codigo(self, tipo: str, count: int, extra: str = "") -> str:
-        from models.database import SessionLocal, AlumnoDB
+        from models.database import SessionLocal, AlumnoDB, CitaDB
         db = SessionLocal()
         try:
             if tipo == "OBS":
-                # Asumimos que OBS (observados) no estǭ en SQL pero usamos el count de JSON
-                return f"OBS-2026-{count + 1:03d}"
+                db_count = db.query(CitaDB).filter(CitaDB.codigo_obs.isnot(None)).count()
+                return f"OBS-2026-{db_count + 1:03d}"
             else:
-                # Contamos cuántos alumnos ya hay en la BD para este nivel
                 db_count = db.query(AlumnoDB).filter(AlumnoDB.nivel == extra).count()
-                # Usamos el mayor entre la BD y el JSON en memoria para evitar repetir si se reinicia el servidor
-                total = max(count, db_count)
-                return f"EST-2026-{extra[:3].upper()}-{total + 1:03d}"
+                return f"EST-2026-{extra[:3].upper()}-{db_count + 1:03d}"
         except Exception as e:
             print(f"Error generando código: {e}")
             return f"{tipo}-2026-{extra[:3].upper()}-{count + 1:03d}"
@@ -391,10 +406,9 @@ class ColegioOrchestrator:
 
 
     async def procesar_admision(self, expediente: ExpedienteAdmision):
-        estado = await self.memory.get_state()
-        codigo_est = self.generar_codigo("EST", len(estado["enrolled_students"]), expediente.nivel)
+        codigo_est = self.generar_codigo("EST", 0, expediente.nivel)
 
-        from models.database import SessionLocal, AdmisionDB
+        from models.database import SessionLocal, AdmisionDB, CitaDB
         db = SessionLocal()
         
         try:
@@ -427,20 +441,12 @@ class ColegioOrchestrator:
             db.add(nueva_admision)
             db.commit()
 
-            # 2. Mantener en JSON memory para compatibilidad con código antiguo
-            estado["enrolled_students"][codigo_est] = {
-                "dni": expediente.dni,
-                "nombres": f"{expediente.nombres} {expediente.apellidos}",
-                "nivel": expediente.nivel,
-                "grado": expediente.grado,
-                "apoderado": expediente.ap_nombre,
-                "ap_correo": expediente.ap_correo,
-                "estado_proceso": estado_proceso
-            }
-            await self.memory.set_state(estado)
-
             if status_ret == "requiere_cita":
-                citas_disponibles = [c for c in estado["calendario_psicologia"] if not c["ocupado"]]
+                estado = await self.memory.get_state()
+                citas_ocupadas_db = db.query(CitaDB).filter(CitaDB.estado.notin_(["Cancelado", "Rechazado"])).all()
+                ocupadas_set = {(c.dia, c.hora) for c in citas_ocupadas_db}
+                citas_disponibles = [c for c in estado.get("calendario_psicologia", []) if (c["dia"], c["hora"]) not in ocupadas_set]
+                
                 if not citas_disponibles:
                     raise HTTPException(status_code=400, detail="No hay citas psicológicas disponibles.")
                     
@@ -455,8 +461,7 @@ class ColegioOrchestrator:
             db.close()
 
     async def agendar_cita_psicologica(self, data):
-        estado = await self.memory.get_state()
-        codigo_obs = self.generar_codigo("OBS", len(estado.get("observed_students", {})), "")
+        codigo_obs = self.generar_codigo("OBS", 0, "")
 
         from models.database import SessionLocal, CitaDB
         db = SessionLocal()
@@ -472,6 +477,7 @@ class ColegioOrchestrator:
 
             nueva_cita = CitaDB(
                 codigo_obs=codigo_obs,
+                dni_postulante=data.expediente.dni,
                 motivo="Admisión",
                 dia=data.dia,
                 hora=data.hora,
@@ -480,107 +486,53 @@ class ColegioOrchestrator:
             db.add(nueva_cita)
             db.commit()
 
-            # Compatibilidad con JSON memory local
-            for c in estado.get("calendario_psicologia", []):
-                if c["dia"] == data.dia and c["hora"] == data.hora:
-                    c["ocupado"] = True
-                    c["codigo_obs"] = codigo_obs
-                    break
-
-            if "observed_students" not in estado:
-                estado["observed_students"] = {}
-            estado["observed_students"][codigo_obs] = {
-                "dni": data.expediente.dni,
-                "nombres": f"{data.expediente.nombres} {data.expediente.apellidos}",
-                "nivel": data.expediente.nivel,
-                "grado": data.expediente.grado,
-                "apoderado": data.expediente.ap_nombre,
-                "ap_correo": data.expediente.ap_correo,
-                "estado_proceso": "En Observación",
-                "datos_originales": data.expediente.model_dump()
-            }
-            await self.memory.set_state(estado)
             return {"status": "agendado", "codigo_obs": codigo_obs, "mensaje": "Cita confirmada en BD y código generado."}
         finally:
             db.close()
 
     async def evaluar_psicologico(self, codigo_obs: str, decision: str, observacion: str):
-        estado = await self.memory.get_state()
-        if codigo_obs not in estado.get("observed_students", {}):
-            raise HTTPException(status_code=404, detail="Código OBS no encontrado")
-
-        alumno = estado["observed_students"][codigo_obs]
-
         from models.database import SessionLocal, AdmisionDB, CitaDB
         import logging
         db = SessionLocal()
         try:
             # 1. Actualizar CitaDB
             cita = db.query(CitaDB).filter(CitaDB.codigo_obs == codigo_obs).first()
-            if cita:
-                cita.estado = "Atendido"
-                db.commit()
+            if not cita:
+                raise HTTPException(status_code=404, detail="Código OBS no encontrado")
+            cita.estado = "Atendido"
+            db.commit()
 
             # 2. Actualizar AdmisionDB y recuperar codigo_est original
-            admision = db.query(AdmisionDB).filter(AdmisionDB.dni == alumno.get("dni")).first()
+            admision = db.query(AdmisionDB).filter(AdmisionDB.dni == cita.dni_postulante).first()
             if not admision:
-                codigo_est = self.generar_codigo("EST", len(estado.get("enrolled_students", {})), alumno["nivel"])
-            else:
-                codigo_est = admision.codigo_est
+                raise HTTPException(status_code=404, detail="Expediente de admisión no encontrado.")
+            
+            codigo_est = admision.codigo_est
 
             if decision == "Aprobado":
-                if admision:
-                    admision.estado_proceso = "Admitido (Falta Pago)"
-                    db.commit()
-                    
-                if "enrolled_students" not in estado:
-                    estado["enrolled_students"] = {}
-                    
-                estado["enrolled_students"][codigo_est] = {
-                    "dni": alumno.get("dni", ""),
-                    "nombres": alumno["nombres"],
-                    "nivel": alumno["nivel"],
-                    "grado": alumno["grado"],
-                    "apoderado": alumno.get("apoderado", ""),
-                    "ap_correo": alumno.get("ap_correo", ""),
-                    "estado_proceso": "Admitido (Falta Pago)"
-                }
-                del estado["observed_students"][codigo_obs]
-                await self.memory.set_state(estado)
+                admision.estado_proceso = "Admitido (Falta Pago)"
+                db.commit()
                 
                 # ENVIAR CORREO DE APROBACION AL APODERADO
-                ap_correo = admision.ap_correo if admision else alumno.get("ap_correo")
+                ap_correo = admision.ap_correo
                 if not ap_correo:
-                    logging.error(f"Error Crítico: No se pudo encontrar el correo del apoderado para el alumno {alumno.get('dni')}")
+                    logging.error(f"Error Crítico: No se pudo encontrar el correo del apoderado para el alumno {admision.dni}")
                 
-                monto = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
-                cuerpo_aprobado = f"Estimado apoderado de {alumno['nombres']},\n\nNos complace informarle que la evaluación psicológica ha sido favorable y el estudiante ha sido ADMITIDO.\n\nPara completar la matrícula, debe realizar el pago de la cuota de S/ {monto}.\nSu Código de Estudiante para realizar el pago en el chat es: {codigo_est}\n\nPor favor, regrese al chat de admisión, escriba 'Quiero pagar mi matrícula' y proporcione su código {codigo_est}.\n\nAtentamente,\nDepartamento de Psicología."
+                monto = 500.0 if "primaria" in admision.nivel.lower() else 700.0
+                cuerpo_aprobado = f"Estimado apoderado de {admision.nombres},\n\nNos complace informarle que la evaluación psicológica ha sido favorable y el estudiante ha sido ADMITIDO.\n\nPara completar la matrícula, debe realizar el pago de la cuota de S/ {monto}.\nSu Código de Estudiante para realizar el pago en el chat es: {codigo_est}\n\nPor favor, regrese al chat de admisión, escriba 'Quiero pagar mi matrícula' y proporcione su código {codigo_est}.\n\nAtentamente,\nDepartamento de Psicología."
                 self._enviar_correo_admision(ap_correo, "RESULTADO DE EVALUACIÓN PSICOLÓGICA - ADMITIDO", cuerpo_aprobado)
 
                 return {"status": "aprobado", "codigo_est": codigo_est, "mensaje": f"Aprobado. Obs: {observacion}"}
             else:
-                if admision:
-                    admision.estado_proceso = "Rechazado"
-                    db.commit()
-                    
-                if "rejected_students" not in estado:
-                    estado["rejected_students"] = {}
-                    
-                estado["rejected_students"][codigo_obs] = {
-                    "nombres": alumno["nombres"],
-                    "dni": alumno.get("dni", ""),
-                    "motivo": observacion or "Rechazado en Entrevista Psicológica",
-                    "estado_proceso": "Rechazado"
-                }
-                del estado["observed_students"][codigo_obs]
-                await self.memory.set_state(estado)
+                admision.estado_proceso = "Rechazado"
+                db.commit()
                 
                 # ENVIAR CORREO DE RECHAZO
-                ap_correo = admision.ap_correo if admision else alumno.get("ap_correo")
+                ap_correo = admision.ap_correo
                 if not ap_correo:
-                    logging.error(f"Error Crítico: No se pudo encontrar el correo del apoderado para el alumno {alumno.get('dni')}")
+                    logging.error(f"Error Crítico: No se pudo encontrar el correo del apoderado para el alumno {admision.dni}")
                     
-                cuerpo_rechazo = f"Estimado(a) padre de familia,\n\nNos dirigimos a usted para agradecerle sinceramente el interés mostrado en que su hijo(a), {alumno['nombres']}, forme parte de nuestra comunidad educativa.\n\nComo es de su conocimiento, nuestro proceso de matrícula incluye una evaluación psicopedagógica y conductual exhaustiva. Este procedimiento nos permite asegurar que nuestra metodología y entorno sean los más adecuados para el desarrollo integral de cada estudiante, así como para mantener la armonía de nuestra comunidad.\n\nTras una cuidadosa revisión de los resultados obtenidos por nuestro Departamento de Psicología, lamentamos informarle que no podremos proceder con la aceptación de la matrícula para el presente periodo académico.\n\nEsta decisión ha sido tomada priorizando el bienestar mutuo y reconociendo que, en esta etapa, el perfil conductual evaluado requiere un acompañamiento o entorno diferente al que nuestra institución puede brindar actualmente.\n\nEntendemos que esta noticia puede ser difícil. Si desea agendar una reunión privada con nuestra área de psicología para recibir una retroalimentación detallada sobre la evaluación de su menor hijo(a), por favor responda a este correo.\n\nAtentamente,\n\nComité de Admisión y Psicología"
+                cuerpo_rechazo = f"Estimado(a) padre de familia,\n\nNos dirigimos a usted para agradecerle sinceramente el interés mostrado en que su hijo(a), {admision.nombres}, forme parte de nuestra comunidad educativa.\n\nComo es de su conocimiento, nuestro proceso de matrícula incluye una evaluación psicopedagógica y conductual exhaustiva. Este procedimiento nos permite asegurar que nuestra metodología y entorno sean los más adecuados para el desarrollo integral de cada estudiante, así como para mantener la armonía de nuestra comunidad.\n\nTras una cuidadosa revisión de los resultados obtenidos por nuestro Departamento de Psicología, lamentamos informarle que no podremos proceder con la aceptación de la matrícula para el presente periodo académico.\n\nEsta decisión ha sido tomada priorizando el bienestar mutuo y reconociendo que, en esta etapa, el perfil conductual evaluado requiere un acompañamiento o entorno diferente al que nuestra institución puede brindar actualmente.\n\nEntendemos que esta noticia puede ser difícil. Si desea agendar una reunión privada con nuestra área de psicología para recibir una retroalimentación detallada sobre la evaluación de su menor hijo(a), por favor responda a este correo.\n\nAtentamente,\n\nComité de Admisión y Psicología"
                 self._enviar_correo_admision(ap_correo, "RESULTADO DE EVALUACIÓN PSICOLÓGICA - NO ADMITIDO", cuerpo_rechazo)
                 
                 return {"status": "rechazado", "mensaje": f"Rechazado. Motivo: {observacion}"}
@@ -588,107 +540,93 @@ class ColegioOrchestrator:
             db.close()
 
     async def registrar_pago(self, pago: PagoMatricula):
-        estado = await self.memory.get_state()
-        if pago.codigo_est not in estado["enrolled_students"]:
-            raise HTTPException(status_code=404, detail="Estudiante no encontrado.")
-
-        alumno = estado["enrolled_students"][pago.codigo_est]
-        if alumno["estado_proceso"] != "Admitido (Falta Pago)":
-            raise HTTPException(status_code=400, detail=f"El estudiante no está habilitado para matrícula. Estado actual: {alumno['estado_proceso']}")
-
-        # Reemplazado Swarm por un condicional directo para que no demore el pago
-        monto_requerido = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
-
-        if pago.monto_pagado < monto_requerido:
-            raise HTTPException(status_code=400, detail=f"Monto insuficiente. Requiere S/ {monto_requerido}")
-
-        alumno["estado_proceso"] = "Matriculado"
-        estado["enrolled_students"][pago.codigo_est] = alumno
-        await self.memory.set_state(estado)
-        
-        # Persistir el cambio de estado en AdmisionDB e insertar en AlumnoDB
         from models.database import SessionLocal, AdmisionDB, AlumnoDB, MatriculaDB, AnioEscolarDB
         db = SessionLocal()
         try:
             adm = db.query(AdmisionDB).filter(AdmisionDB.codigo_est == pago.codigo_est).first()
-            if adm:
-                adm.estado_proceso = "Matriculado"
+            if not adm:
+                raise HTTPException(status_code=404, detail="Estudiante no encontrado.")
+
+            if adm.estado_proceso != "Admitido (Falta Pago)":
+                raise HTTPException(status_code=400, detail=f"El estudiante no está habilitado para matrícula. Estado actual: {adm.estado_proceso}")
+
+            # Reemplazado Swarm por un condicional directo para que no demore el pago
+            monto_requerido = 500.0 if "primaria" in adm.nivel.lower() else 700.0
+
+            if pago.monto_pagado < monto_requerido:
+                raise HTTPException(status_code=400, detail=f"Monto insuficiente. Requiere S/ {monto_requerido}")
+            
+            adm.estado_proceso = "Matriculado"
                 
-                # Crear el registro real del alumno
-                alumno_existente = db.query(AlumnoDB).filter(AlumnoDB.dni == adm.dni).first()
-                if not alumno_existente:
-                    nuevo_alumno = AlumnoDB(
-                        codigo_est=pago.codigo_est,
-                        dni=adm.dni,
-                        nombres=f"{adm.nombres} {adm.apellidos}",
+            # Crear el registro real del alumno
+            alumno_existente = db.query(AlumnoDB).filter(AlumnoDB.dni == adm.dni).first()
+            if not alumno_existente:
+                nuevo_alumno = AlumnoDB(
+                    codigo_est=pago.codigo_est,
+                    dni=adm.dni,
+                    nombres=f"{adm.nombres} {adm.apellidos}",
+                    nivel=adm.nivel,
+                    grado=adm.grado,
+                    estado="Matriculado"
+                )
+                db.add(nuevo_alumno)
+                db.flush() # Para obtener el ID del alumno
+                alumno_id = nuevo_alumno.id
+            else:
+                alumno_id = alumno_existente.id
+            
+            # Crear registro de matricula
+            anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+            if anio_activo:
+                matricula_existente = db.query(MatriculaDB).filter(
+                    MatriculaDB.alumno_id == alumno_id, 
+                    MatriculaDB.anio_escolar_id == anio_activo.id
+                ).first()
+                if not matricula_existente:
+                    nueva_matricula = MatriculaDB(
+                        alumno_id=alumno_id,
+                        anio_escolar_id=anio_activo.id,
                         nivel=adm.nivel,
                         grado=adm.grado,
-                        estado="Matriculado"
+                        estado_matricula="CONFIRMADA"
                     )
-                    db.add(nuevo_alumno)
-                    db.flush() # Para obtener el ID del alumno
-                    alumno_id = nuevo_alumno.id
-                else:
-                    alumno_id = alumno_existente.id
-                
-                # Crear registro de matricula
-                anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
-                if anio_activo:
-                    matricula_existente = db.query(MatriculaDB).filter(
-                        MatriculaDB.alumno_id == alumno_id, 
-                        MatriculaDB.anio_escolar_id == anio_activo.id
-                    ).first()
-                    if not matricula_existente:
-                        nueva_matricula = MatriculaDB(
-                            alumno_id=alumno_id,
-                            anio_escolar_id=anio_activo.id,
-                            nivel=adm.nivel,
-                            grado=adm.grado,
-                            estado_matricula="CONFIRMADA"
-                        )
-                        db.add(nueva_matricula)
+                    db.add(nueva_matricula)
                         
-                db.commit()
+            db.commit()
         finally:
             db.close()
             
         return {"status": "success", "mensaje": "Matrícula completada exitosamente."}
 
     async def registrar_nota(self, registro: RegistroNota):
-        estado = await self.memory.get_state()
-
-        if registro.codigo_est not in estado["enrolled_students"]:
-            raise HTTPException(status_code=404, detail="Estudiante no existe.")
-
-        alumno = estado["enrolled_students"][registro.codigo_est]
-        if alumno["estado_proceso"] != "Matriculado":
-            raise HTTPException(status_code=400, detail="Conflicto de Estado: Estudiante no tiene matrícula activa.")
-
-        # Evaluador Académico usando Swarm
-        def eval_academic():
-            return swarm_client.run(
-                agent=ag_evaluacion,
-                messages=[{"role": "user", "content": f"El alumno ha sacado {registro.nota} en el curso {registro.curso}. Evalúa si se requiere tutoría y emite una recomendación."}]
-            )
-        eval_res = await asyncio.to_thread(eval_academic)
-        respuesta_eval = eval_res.messages[-1]["content"]
-        
-        alerta = "tutor" in respuesta_eval.lower() or "alerta" in respuesta_eval.lower()
-
-        if alerta:
-            await self.bus.publish(
-                "ALERTA_PEDAGOGICA",
-                f"{alumno['nombres']} - Riesgo en {registro.curso} (Nota: {registro.nota}). Recomendación IA: {respuesta_eval}"
-            )
-
         from models.database import SessionLocal, NotaDB, AlumnoDB, CursoDB
         db = SessionLocal()
         try:
-            # 1. Guardar en PostgreSQL para persistencia
             al = db.query(AlumnoDB).filter(AlumnoDB.codigo_est == registro.codigo_est).first()
             if not al:
                 raise HTTPException(status_code=404, detail="Estudiante no existe en BD.")
-                
+
+            if al.estado != "Matriculado":
+                raise HTTPException(status_code=400, detail="Conflicto de Estado: Estudiante no tiene matrícula activa.")
+
+            # Evaluador Académico usando Swarm
+            def eval_academic():
+                return swarm_client.run(
+                    agent=ag_evaluacion,
+                    messages=[{"role": "user", "content": f"El alumno ha sacado {registro.nota} en el curso {registro.curso}. Evalúa si se requiere tutoría y emite una recomendación."}]
+                )
+            eval_res = await asyncio.to_thread(eval_academic)
+            respuesta_eval = eval_res.messages[-1]["content"]
+            
+            alerta = "tutor" in respuesta_eval.lower() or "alerta" in respuesta_eval.lower()
+
+            if alerta:
+                await self.bus.publish(
+                    "ALERTA_PEDAGOGICA",
+                    f"{al.nombres} - Riesgo en {registro.curso} (Nota: {registro.nota}). Recomendación IA: {respuesta_eval}"
+                )
+
+            # 1. Guardar en PostgreSQL para persistencia
             c = db.query(CursoDB).filter(CursoDB.nombre == registro.curso, CursoDB.nivel == al.nivel).first()
             if not c:
                 c = db.query(CursoDB).filter(CursoDB.nombre == registro.curso).first()
@@ -707,14 +645,6 @@ class ColegioOrchestrator:
             db.add(nueva_nota)
             db.commit()
 
-            # 2. Mantener en JSON memory para compatibilidad con código antiguo
-            if registro.codigo_est not in estado["notas_trimestrales"]:
-                estado["notas_trimestrales"][registro.codigo_est] = {}
-            if registro.curso not in estado["notas_trimestrales"][registro.codigo_est]:
-                estado["notas_trimestrales"][registro.codigo_est][registro.curso] = []
-
-            estado["notas_trimestrales"][registro.codigo_est][registro.curso].append(registro.nota)
-            await self.memory.set_state(estado)
         finally:
             db.close()
 

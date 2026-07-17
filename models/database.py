@@ -173,6 +173,7 @@ class CitaDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     alumno_id = Column(Integer, ForeignKey("alumnos.id"), nullable=True)
     codigo_obs = Column(String, nullable=True) # Para postulantes sin alumno_id
+    dni_postulante = Column(String, nullable=True) # Enlace directo con AdmisionDB
     motivo = Column(String) # 'Admisión', 'Rendimiento'
     psicologo_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     tutor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -299,6 +300,16 @@ class AdmisionDB(Base):
     ap_telefono = Column(String)
     estado_proceso = Column(String, default="Pendiente Evaluación")
     fecha_registro = Column(DateTime, default=ahora_lima)
+
+class EmailLogDB(Base):
+    __tablename__ = "email_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    destinatario = Column(String, index=True)
+    asunto = Column(String)
+    cuerpo = Column(Text)
+    fecha_envio = Column(DateTime, default=ahora_lima)
+    estado = Column(String, default="Enviado") # Enviado, Fallido
+    error_msg = Column(String, nullable=True)
 
 def init_db():
     with engine.connect() as conn:
