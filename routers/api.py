@@ -30,7 +30,7 @@ API Router del ERP Escolar — Endpoints REST + SSE Streaming.
 import asyncio
 import json
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from fastapi.responses import JSONResponse
@@ -43,7 +43,7 @@ from schemas.sse import StreamChatRequest
 from agents.orchestrator import ColegioOrchestrator
 from core.antigravity import school_db, event_bus, agent_graph, telemetry_store, sse_manager
 from core.tasks import procesar_admision_batch, celery_app
-from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB
+from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB, ConfiguracionGlobalDB
 from agents.subagents import ag_monitor
 
 
@@ -859,6 +859,7 @@ async def admin_docente_horario(
 
 def _format_horario(horarios, db):
     resultado = []
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
     for h in horarios:
         curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == h.curso_id).first()
         doc = db.query(UserDB).filter(UserDB.id == h.docente_id).first()
