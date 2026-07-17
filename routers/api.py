@@ -825,6 +825,14 @@ async def asignacion_inteligente(
     tutores_payload = payload.primaria_tutores if payload.nivel == "PRIMARIA" else payload.secundaria_tutores
     for key, tutor_id in tutores_payload.items():
         if tutor_id:
+            # --- HARD VALIDATION: RECHAZAR ESPECIALISTAS COMO TUTORES EN PRIMARIA ---
+            if payload.nivel == "PRIMARIA":
+                esps = db.query(DocenteEspecialidadDB).filter(DocenteEspecialidadDB.docente_id == tutor_id, DocenteEspecialidadDB.nivel == "PRIMARIA").all()
+                rotativos = [e.curso_nombre for e in esps if any(x in e.curso_nombre.lower() for x in ["inglés", "educación física", "religión"])]
+                if rotativos:
+                    print(f"ALERTA CRÍTICA: La IA intentó asignar al especialista {tutor_id} ({rotativos}) como tutor de {key}. Asignación rechazada por el backend.")
+                    continue
+            # -------------------------------------------------------------------------
             try:
                 grado_str, seccion = key.split('-')
                 grado = int(grado_str)
@@ -1696,15 +1704,25 @@ async def asignacion_primaria_ia(db: Session = Depends(get_db), current_user: To
     if not docentes:
         return {"tutores": {}, "especialistas": {}}
     
-    docentes_info = [{"id": d.id, "nombre": d.username} for d in docentes]
+    docentes_info = []
+    for d in docentes:
+        esps = db.query(DocenteEspecialidadDB).filter(DocenteEspecialidadDB.docente_id == d.id).all()
+        nombres_esps = [e.curso_nombre for e in esps]
+        docentes_info.append({
+            "id": d.id, 
+            "nombre": d.username, 
+            "especialidades": nombres_esps
+        })
     
     prompt = PromptTemplate.from_template("""Eres un asistente escolar de IA.
-Tienes la siguiente lista de docentes de primaria:
+Tienes la siguiente lista de docentes de primaria con sus respectivas especialidades:
 {docentes}
 
 Tu tarea es:
 1. Asignar 1 tutor único a cada una de las siguientes aulas: 1-A, 1-B, 2-A, 2-B, 3-A, 3-B, 4-A, 4-B, 5-A, 5-B, 6-A, 6-B. (12 aulas = 12 docentes únicos).
-2. Asignar 1 o 2 docentes (distintos a los 12 seleccionados) a los cursos especiales rotativos: 'Inglés', 'Educación Física', 'Religión'. Intenta usar a los docentes restantes.
+2. Asignar 1 o 2 docentes (distintos a los 12 seleccionados) a los cursos especiales rotativos: 'Inglés', 'Educación Física', 'Religión'.
+REGLA DE ORO: Si un docente tiene en su lista de especialidades "Inglés", "Educación Física" o "Religión", DEBE ser asignado EXCLUSIVAMENTE a ese curso rotativo y NUNCA como tutor. Los tutores deben ser elegidos entre los docentes que tengan especialidades generales (Matemática, Comunicación, etc.) o no tengan especialidades rotativas.
+
 
 Responde ÚNICAMENTE con un JSON en el siguiente formato, sin markdown ni comillas especiales:
 {{
@@ -2058,6 +2076,15 @@ async def create_tutor(
     anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
     if not anio_activo:
         raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+        
+    # --- HARD VALIDATION: RECHAZAR ESPECIALISTAS ---
+    if tutor.nivel == "PRIMARIA":
+        esps = db.query(DocenteEspecialidadDB).filter(DocenteEspecialidadDB.docente_id == tutor.docente_id, DocenteEspecialidadDB.nivel == "PRIMARIA").all()
+        rotativos = [e.curso_nombre for e in esps if any(x in e.curso_nombre.lower() for x in ["inglés", "educación física", "religión"])]
+        if rotativos:
+            raise HTTPException(status_code=400, detail=f"Este docente es especialista rotativo ({', '.join(rotativos)}) y no puede ser tutor de aula, ya que su rol requiere estar disponible para todas las secciones de Primaria.")
+    # ------------------------------------------------
+    
     # Validar que el docente no sea ya tutor de otra sección
     tutor_existente = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(TutorDB.docente_id == tutor.docente_id).first()
     if tutor_existente:
