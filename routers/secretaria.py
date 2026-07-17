@@ -467,6 +467,8 @@ class MatriculaDirectaRequest(BaseModel):
     nivel: str
     grado: int
     seccion: str = "A"
+    promedio: float = 0.0
+    conducta: str = "A"
     ap_nombre: str
     ap_dni: str
     ap_correo: str
@@ -516,6 +518,8 @@ async def matricula_directa(req: MatriculaDirectaRequest, db: Session = Depends(
             apellidos=req.apellidos,
             nivel=req.nivel,
             grado=req.grado,
+            promedio=req.promedio,
+            conducta=req.conducta,
             ap_nombre=req.ap_nombre,
             ap_correo=req.ap_correo,
             ap_telefono=req.ap_telefono,
