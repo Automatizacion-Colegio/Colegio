@@ -43,7 +43,7 @@ from schemas.sse import StreamChatRequest
 from agents.orchestrator import ColegioOrchestrator
 from core.antigravity import school_db, event_bus, agent_graph, telemetry_store, sse_manager
 from core.tasks import procesar_admision_batch, celery_app
-from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB, ConfiguracionGlobalDB
+from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB, ConfiguracionGlobalDB, AdmisionDB
 from agents.subagents import ag_monitor
 
 
