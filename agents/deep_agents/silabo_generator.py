@@ -202,6 +202,10 @@ def persistence_agent_node(state: SilaboState) -> Dict[str, Any]:
                 "docente_id": state.get("docente_id"),
             }
 
+            for k, v in fields.items():
+                if isinstance(v, (dict, list)):
+                    fields[k] = json.dumps(v, ensure_ascii=False)
+
             if existente:
                 for k, v in fields.items():
                     setattr(existente, k, v)
