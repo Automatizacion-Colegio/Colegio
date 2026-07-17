@@ -733,7 +733,9 @@ async def actualizar_silabo(
     
     # Solo el docente propietario o admin puede editar
     if silabo.docente_id and silabo.docente_id != current_user.user_id and current_user.role != "ADMIN":
-        raise HTTPException(status_code=403, detail="No tienes permiso para editar este sílabo.")
+        es_secundaria = db.query(HorarioDB).filter(HorarioDB.curso_id == silabo.curso_id, HorarioDB.docente_id == current_user.user_id, HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).first() is not None
+        if not es_secundaria:
+            raise HTTPException(status_code=403, detail="No tienes permiso para editar este sílabo.")
     
     campos = ["competencias", "capacidades", "desempennos", "enfoques",
               "bimestre_1", "bimestre_2", "bimestre_3", "bimestre_4",
@@ -1223,8 +1225,13 @@ async def get_alumnos_docente(
         raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     if not curso_id:
         return []
-    curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == curso_id, CursoDB.docente_id == current_user.user_id).first()
+    curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == curso_id).first()
     if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado.")
+    
+    es_titular = curso.docente_id == current_user.user_id
+    es_horario = db.query(HorarioDB).filter(HorarioDB.curso_id == curso.id, HorarioDB.docente_id == current_user.user_id, HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).first() is not None
+    if not es_titular and not es_horario and current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="No tienes acceso a este curso.")
     
     alumnos = db.query(AlumnoDB).filter(
@@ -1348,9 +1355,11 @@ async def subir_notas_batch(
             curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == curso_id).first()
             if not curso:
                 raise HTTPException(status_code=404, detail=f"Curso {curso_id} no encontrado.")
-            # Si el usuario NO es admin, verificamos que sea el dueño del curso
+            # Si el usuario NO es admin, verificamos que sea el dueño del curso o profesor de secundaria
             if current_user.role != "ADMIN" and curso.docente_id != current_user.user_id:
-                raise HTTPException(status_code=403, detail="No tienes permiso para calificar este curso.")
+                es_horario = db.query(HorarioDB).filter(HorarioDB.curso_id == curso.id, HorarioDB.docente_id == current_user.user_id, HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).first() is not None
+                if not es_horario:
+                    raise HTTPException(status_code=403, detail="No tienes permiso para calificar este curso.")
             cursos_cacheados[curso_id] = curso
 
         nueva_nota = NotaDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
