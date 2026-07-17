@@ -62,8 +62,8 @@ def _startup_sync():
         db.add(UserDB(username="secretario1", hashed_password=get_password_hash("sec123"), role="SECRETARIO", nombre_completo="Secretario Prueba"))
         db.commit()
         
-    if not db.query(AnioEscolarDB).filter(AnioEscolarDB.activo == True).first():
-        db.add(AnioEscolarDB(anio=2026, activo=True))
+    if not db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first():
+        db.add(AnioEscolarDB(anio=2026, estado="ACTIVO"))
         db.commit()
     db.close()
 

@@ -64,7 +64,7 @@ class ConfigMatricula(BaseModel):
 @router.get("/config")
 async def get_config(db: Session = Depends(get_db)):
     config = db.query(ConfiguracionGlobalDB).first()
-    anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.activo == True).first()
+    anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     
     dates = {
         "inicio_matricula": anio.inicio_matricula if anio else None,
@@ -106,7 +106,7 @@ async def set_config(config_data: ConfigMatricula, db: Session = Depends(get_db)
     config.precio_recuperacion_primaria = config_data.precio_recuperacion_primaria
     config.precio_recuperacion_secundaria = config_data.precio_recuperacion_secundaria
     
-    anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.activo == True).first()
+    anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     if anio:
         anio.inicio_matricula = config_data.inicio_matricula
         anio.fin_matricula = config_data.fin_matricula
