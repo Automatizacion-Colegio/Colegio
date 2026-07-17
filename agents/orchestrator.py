@@ -235,8 +235,10 @@ swarm_client.get_chat_completion = patched_get_chat_completion
 
 
 class ColegioOrchestrator:
-    def __init__(self):
-        self.memory = JSONStateMemory()
+    def __init__(self, memory: SharedMemory, bus: EventBus, graph: AgentGraph):
+        self.memory = memory
+        self.bus = bus
+        self.graph = graph
         
     def _enviar_correo_admision(self, destinatario: str, asunto: str, cuerpo: str):
         if not destinatario: return
