@@ -77,12 +77,12 @@
 │  │  │  Psicólogo │ BI Agent │ Sílabo │ Examen │ Justific.  │  │  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  └────────────────────────────────────────────────────────────┘  │
-└──────┬────────────────┬────────────────┬─────────────────────────┘
-       │                │                │
-       ▼                ▼                ▼
-  Neon (PgSQL)        Redis          LLMs API
-  + pgvector     Cache + Celery     Groq / Gemini
-  (RAG Store)    Broker/Backend     LangSmith Traces
+└──────┬────────────────┬────────────────┬─────────────────────────┬────────┐
+       │                │                │                         │
+       ▼                ▼                ▼                         ▼
+  Neon (PgSQL)        Redis          LLMs API                  Cloudinary
+  + pgvector     Cache + Celery     Groq / Gemini              Imágenes y
+  (RAG Store)    Broker/Backend     LangSmith Traces           Vouchers OCR
 ```
 
 ---
@@ -271,6 +271,7 @@ Cada invocación LLM o cadena LangChain se registra en **LangSmith** para:
 | **Trazabilidad IA** | LangSmith | Monitoreo de agentes en producción |
 | **Caché Semántica** | Redis (redis.asyncio) | Ahorro de tokens en FAQs frecuentes |
 | **Cola de Tareas** | Celery + Redis | Tareas asíncronas en background |
+| **Almacenamiento de Imágenes** | Cloudinary | CDN y hosting para fotos, vouchers y firmas |
 | **OCR** | Pytesseract + Pillow | Lectura de documentos médicos y vouchers |
 | **Seguridad / Auth** | Python-jose + Passlib + bcrypt | JWT + RBAC |
 | **Testing** | Pytest + Flake8 | Pruebas unitarias e integración en CI |
@@ -361,6 +362,7 @@ Copia `.env.example` a `.env` y completa los valores.
 |---|---|---|
 | `JWT_SECRET` | Llave maestra de firma de tokens | ✅ |
 | `FRONTEND_URL` | URL del frontend (para CORS) | ✅ |
+| `CLOUDINARY_URL` | Credenciales de Cloudinary (API Key/Secret) | ✅ |
 | `SMTP_PASSWORD` | Contraseña SMTP para correos | Opcional |
 
 ---
