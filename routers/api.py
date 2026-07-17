@@ -1890,8 +1890,8 @@ async def get_users(
             "especializaciones": []
         }
         if u.role == "DOCENTE":
-            esps = db.query(DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB).filter(
-                DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB.docente_id == u.id
+            esps = db.query(DocenteEspecialidadDB).filter(
+                DocenteEspecialidadDB.docente_id == u.id
             ).all()
             data["especializaciones"] = [
                 {"curso_nombre": e.curso_nombre, "nivel": e.nivel} for e in esps
