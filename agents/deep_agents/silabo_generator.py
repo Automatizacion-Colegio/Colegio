@@ -171,7 +171,7 @@ def persistence_agent_node(state: SilaboState) -> Dict[str, Any]:
     if state.get("error_msg"):
         return {"silabo_id": None}
     try:
-        from datetime import datetime
+        from core.utils import ahora_lima
         from models.database import SessionLocal, SilaboTemDB
 
         db = SessionLocal()
@@ -182,7 +182,7 @@ def persistence_agent_node(state: SilaboState) -> Dict[str, Any]:
                 SilaboTemDB.curso_nombre == state["area"],
             ).first()
 
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            now_str = ahora_lima().strftime("%Y-%m-%d %H:%M")
             fields = {
                 "anno_escolar": state["anno_escolar"],
                 "datos_informativos": state.get("datos_informativos", ""),

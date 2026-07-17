@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
+from core.utils import ahora_lima
 
 import os
 from dotenv import load_dotenv
@@ -18,14 +19,73 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+class AnioEscolarDB(Base):
+    __tablename__ = "anios_escolares"
+    id = Column(Integer, primary_key=True, index=True)
+    anio = Column(Integer, unique=True, index=True)
+    estado = Column(String, default="ACTIVO") # ACTIVO, CERRADO
+    fecha_cierre = Column(String, nullable=True)
+    inicio_matricula = Column(String, nullable=True)
+    fin_matricula = Column(String, nullable=True)
+    limite_rematricula = Column(String, nullable=True)
+
+class ConfiguracionGlobalDB(Base):
+    __tablename__ = "configuracion_global"
+    id = Column(Integer, primary_key=True, index=True)
+    cupos_primaria = Column(Integer, default=30)
+    cupos_secundaria = Column(Integer, default=30)
+    precio_matricula_primaria = Column(Float, default=0.0)
+    precio_matricula_secundaria = Column(Float, default=0.0)
+    precio_pension_primaria = Column(Float, default=0.0)
+    precio_pension_secundaria = Column(Float, default=0.0)
+    precio_recuperacion_primaria = Column(Float, default=0.0)
+    precio_recuperacion_secundaria = Column(Float, default=0.0)
+
+class MatriculaDB(Base):
+    __tablename__ = "matriculas"
+    id = Column(Integer, primary_key=True, index=True)
+    alumno_id = Column(Integer, ForeignKey("alumnos.id"))
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"))
+    nivel = Column(String)
+    grado = Column(Integer)
+    seccion = Column(String, default='A')
+    promedio_final = Column(Float, nullable=True)
+    estado_final = Column(String, nullable=True) # Aprobado, Repitente, Recuperacion
+    puesto = Column(Integer, nullable=True)
+    estado_matricula = Column(String, default="CONFIRMADA") # CONFIRMADA, PENDIENTE_PAGO, PENDIENTE_RECUPERACION
+    __table_args__ = (
+        UniqueConstraint("alumno_id", "anio_escolar_id", name="uq_matricula_alumno_anio"),
+    )
+
+class CertificadoDB(Base):
+    __tablename__ = "certificados"
+    id = Column(Integer, primary_key=True, index=True)
+    alumno_id = Column(Integer, ForeignKey("alumnos.id"))
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"))
+    tipo = Column(String) # MERITO, CONCLUSION_PRIMARIA, CONCLUSION_SECUNDARIA
+    puesto = Column(Integer, nullable=True)
+    ruta_archivo = Column(String)
+    fecha_generacion = Column(String)
+    storage_type = Column(String, default="LOCAL") # LOCAL o CLOUDINARY
+
+class CursoRecuperacionDB(Base):
+    __tablename__ = "cursos_recuperacion"
+    id = Column(Integer, primary_key=True, index=True)
+    matricula_id = Column(Integer, ForeignKey("matriculas.id"))
+    curso_id = Column(Integer, ForeignKey("cursos.id"))
+    nota_recuperacion = Column(String, nullable=True)
+    estado = Column(String, default="PENDIENTE") # PENDIENTE, APROBADO, JALADO
+
 class UserDB(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+    nombre_completo = Column(String, nullable=True)
     role = Column(String) # ADMIN, DOCENTE, PSICOLOGO, ALUMNO_PADRE, SECRETARIO
     nivel_asignado = Column(String, nullable=True) # PRIMARIA o SECUNDARIA (solo para DOCENTES)
     is_active = Column(Boolean, default=True)
+    motivo_inactivo = Column(String, default="NINGUNO") # NINGUNO, EGRESADO, RETIRADO
 
 class DocenteEspecialidadDB(Base):
     __tablename__ = "docente_especialidad"
@@ -40,6 +100,7 @@ class DocenteEspecialidadDB(Base):
 class CursoDB(Base):
     __tablename__ = "cursos"
     id = Column(Integer, primary_key=True, index=True)
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"), nullable=True)
     nombre = Column(String)
     nivel = Column(String) # Primaria, Secundaria
     grado = Column(Integer)
@@ -49,6 +110,7 @@ class CursoDB(Base):
 class TutorDB(Base):
     __tablename__ = "tutores"
     id = Column(Integer, primary_key=True, index=True)
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"), nullable=True)
     docente_id = Column(Integer, ForeignKey("users.id"))
     nivel = Column(String)
     grado = Column(Integer)
@@ -66,10 +128,12 @@ class AlumnoDB(Base):
     apoderado_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     estado = Column(String, default="Matriculado") # Aprobado, Matriculado, Repitente
     promedio_final = Column(Float, nullable=True)
+    estado_continuidad = Column(String, default="PENDIENTE") # PENDIENTE, SI, NO
 
 class AsistenciaDB(Base):
     __tablename__ = "asistencia"
     id = Column(Integer, primary_key=True, index=True)
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"), nullable=True)
     alumno_id = Column(Integer, ForeignKey("alumnos.id"))
     fecha = Column(String) # YYYY-MM-DD
     estado = Column(String) # Presente, Falta, Tardanza
@@ -77,6 +141,7 @@ class AsistenciaDB(Base):
 class NotaDB(Base):
     __tablename__ = "notas"
     id = Column(Integer, primary_key=True, index=True)
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"), nullable=True)
     alumno_id = Column(Integer, ForeignKey("alumnos.id"))
     curso_id = Column(Integer, ForeignKey("cursos.id"))
     docente_id = Column(Integer, ForeignKey("users.id"))
@@ -94,6 +159,15 @@ class ObservacionDB(Base):
     fecha = Column(String)
     texto = Column(String)
 
+class TarifarioDB(Base):
+    __tablename__ = "tarifarios"
+    id = Column(Integer, primary_key=True, index=True)
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"))
+    nivel = Column(String) # PRIMARIA, SECUNDARIA
+    concepto = Column(String) # MATRICULA, PENSION, RECUPERACION, CONSTANCIA
+    monto = Column(Float)
+    activo = Column(Boolean, default=True)
+
 class CitaDB(Base):
     __tablename__ = "citas"
     id = Column(Integer, primary_key=True, index=True)
@@ -110,6 +184,7 @@ class CitaDB(Base):
 class HorarioDB(Base):
     __tablename__ = "horarios"
     id = Column(Integer, primary_key=True, index=True)
+    anio_escolar_id = Column(Integer, ForeignKey("anios_escolares.id"), nullable=True)
     nivel = Column(String) # PRIMARIA, SECUNDARIA
     grado = Column(Integer)
     seccion = Column(String)
@@ -203,7 +278,7 @@ class SilaboTemDB(Base):
     bimestre_4 = Column(Text, nullable=True)
     
     docente_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M"))
+    created_at = Column(String, default=lambda: ahora_lima().strftime("%Y-%m-%d %H:%M"))
     updated_at = Column(String, nullable=True)
 
 from sqlalchemy import text
@@ -223,7 +298,7 @@ class AdmisionDB(Base):
     ap_correo = Column(String)
     ap_telefono = Column(String)
     estado_proceso = Column(String, default="Pendiente Evaluación")
-    fecha_registro = Column(DateTime, default=datetime.utcnow)
+    fecha_registro = Column(DateTime, default=ahora_lima)
 
 def init_db():
     with engine.connect() as conn:

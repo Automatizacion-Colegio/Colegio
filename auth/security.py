@@ -65,7 +65,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return token_data
 
-async def get_current_user_optional(token: str = Depends(OAuth2PasswordBearer(tokenUrl="token", auto_error=False))):
+async def get_current_user_optional(token: str = Depends(OAuth2PasswordBearer(tokenUrl="token", auto_error=False)), db: Session = Depends(get_db)):
     if not token:
         return None
     try:
@@ -75,6 +75,12 @@ async def get_current_user_optional(token: str = Depends(OAuth2PasswordBearer(to
         user_id: int = payload.get("user_id")
         if username is None:
             return None
+        
+        # Validate against DB for suspensions
+        user = db.query(UserDB).filter(UserDB.id == user_id).first()
+        if not user or not user.is_active:
+            return None
+            
         return TokenData(username=username, role=role, user_id=user_id)
     except JWTError:
         return None

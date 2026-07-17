@@ -1,3 +1,29 @@
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+from collections import defaultdict
+import os
+import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+from collections import defaultdict
+import os
+import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+from collections import defaultdict
+import os
+import logging
+from core.utils import ahora_lima
+from core.certificados import generar_certificado_pdf
 """
 API Router del ERP Escolar — Endpoints REST + SSE Streaming.
 """
@@ -7,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from core.timetabler import generate_timetables
 
@@ -16,7 +43,7 @@ from schemas.sse import StreamChatRequest
 from agents.orchestrator import ColegioOrchestrator
 from core.antigravity import school_db, event_bus, agent_graph, telemetry_store, sse_manager
 from core.tasks import procesar_admision_batch, celery_app
-from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB
+from models.database import get_db, UserDB, CursoDB, TutorDB, AlumnoDB, AsistenciaDB, NotaDB, CitaDB, HorarioDB, ObservacionDB, CajaDiariaDB, SilaboTemDB, CompetenciaMINEDUDB, CapacidadMINEDUDB, EstandarMINEDUDB, DesempenoMINEDUDB, DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB
 from agents.subagents import ag_monitor
 
 
@@ -29,28 +56,46 @@ class ConfigMatricula(BaseModel):
     secundaria: float
     cupos_aula_primaria: int = 30
     cupos_aula_secundaria: int = 30
+    precio_recuperacion_primaria: float = 0.0
+    precio_recuperacion_secundaria: float = 0.0
 
 @router.get("/config")
-async def get_config():
-    state = await school_db.get_state()
-    return state.get("config_matricula", {
-        "primaria": 500.0, 
-        "secundaria": 700.0,
-        "cupos_aula_primaria": 30,
-        "cupos_aula_secundaria": 30
-    })
+async def get_config(db: Session = Depends(get_db)):
+    config = db.query(ConfiguracionGlobalDB).first()
+    if not config:
+        return {
+            "primaria": 500.0, 
+            "secundaria": 700.0,
+            "cupos_aula_primaria": 30,
+            "cupos_aula_secundaria": 30,
+            "precio_recuperacion_primaria": 0.0,
+            "precio_recuperacion_secundaria": 0.0
+        }
+    return {
+        "primaria": config.precio_matricula_primaria, 
+        "secundaria": config.precio_matricula_secundaria,
+        "cupos_aula_primaria": config.cupos_primaria,
+        "cupos_aula_secundaria": config.cupos_secundaria,
+        "precio_recuperacion_primaria": config.precio_recuperacion_primaria,
+        "precio_recuperacion_secundaria": config.precio_recuperacion_secundaria
+    }
 
 @router.post("/admin/config")
-async def set_config(config: ConfigMatricula, current_user: TokenData = Depends(require_role(["ADMIN"]))):
-    state = await school_db.get_state()
-    state["config_matricula"] = {
-        "primaria": config.primaria, 
-        "secundaria": config.secundaria,
-        "cupos_aula_primaria": config.cupos_aula_primaria,
-        "cupos_aula_secundaria": config.cupos_aula_secundaria
-    }
-    await school_db.set_state(state)
-    return {"message": "Configuración de costos y cupos actualizada correctamente."}
+async def set_config(config_data: ConfigMatricula, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
+    config = db.query(ConfiguracionGlobalDB).first()
+    if not config:
+        config = ConfiguracionGlobalDB()
+        db.add(config)
+        
+    config.precio_matricula_primaria = config_data.primaria
+    config.precio_matricula_secundaria = config_data.secundaria
+    config.cupos_primaria = config_data.cupos_aula_primaria
+    config.cupos_secundaria = config_data.cupos_aula_secundaria
+    config.precio_recuperacion_primaria = config_data.precio_recuperacion_primaria
+    config.precio_recuperacion_secundaria = config_data.precio_recuperacion_secundaria
+    db.commit()
+    
+    return {"message": "Configuración global actualizada en la base de datos."}
 
 
 # ======================================================================
@@ -61,6 +106,7 @@ async def set_config(config: ConfigMatricula, current_user: TokenData = Depends(
 
 @router.post("/chat/stream")
 async def chat_stream(msg: StreamChatRequest, current_user: Optional[TokenData] = Depends(get_current_user_optional), db: Session = Depends(get_db)):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     """
     Endpoint SSE: emite tokens progresivos al cliente.
     Protocol: event: {thinking|tool_call|token|done|error}
@@ -82,7 +128,7 @@ async def chat_stream(msg: StreamChatRequest, current_user: Optional[TokenData] 
         elif current_user.role == "DOCENTE":
             starting_agent = ag_evaluacion
             # Buscar si es tutor
-            tutor_info = db.query(TutorDB).filter(TutorDB.docente_id == current_user.user_id).first()
+            tutor_info = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(TutorDB.docente_id == current_user.user_id).first()
             if tutor_info:
                 user_context["es_tutor"] = True
                 user_context["aula_tutor"] = f"{tutor_info.grado} {tutor_info.seccion} {tutor_info.nivel}"
@@ -91,7 +137,7 @@ async def chat_stream(msg: StreamChatRequest, current_user: Optional[TokenData] 
                 user_context["alumnos_tutoria"] = [{"id": a.id, "nombre": a.nombres} for a in alumnos_aula]
             
             # Cursos asignados
-            cursos = db.query(CursoDB).filter(CursoDB.docente_id == current_user.user_id).all()
+            cursos = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.docente_id == current_user.user_id).all()
             user_context["cursos_asignados"] = [{"id": c.id, "nombre": c.nombre, "aula": f"{c.grado} {c.seccion} {c.nivel}"} for c in cursos]
             
         elif current_user.role == "PSICOLOGO":
@@ -219,6 +265,9 @@ async def get_citas_rendimiento(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["PSICOLOGO", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     citas = db.query(CitaDB).filter(CitaDB.motivo == "Rendimiento").all()
     # Para la demo, adjuntamos datos ficticios o extraemos de alumnos
     resultado = []
@@ -233,13 +282,81 @@ async def get_citas_rendimiento(
         })
     return resultado
 
+@router.get("/admin/estado-flujo")
+async def estado_flujo(
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role(["ADMIN"]))
+):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    docentes_activos = db.query(UserDB).filter(UserDB.role == "DOCENTE").count()
+    cursos_db = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
+    tutores_db = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
+    
+    def procesar_nivel(nivel_str):
+        aulas_unicas = set((c.nivel, c.grado, c.seccion) for c in cursos_db if c.nivel == nivel_str)
+        aulas_con_tutor = set((t.nivel, t.grado, t.seccion) for t in tutores_db if t.nivel == nivel_str)
+        sin_tutor_set = aulas_unicas - aulas_con_tutor
+        aulas_sin_tutor = [f"{g}° - {s}" for _, g, s in sin_tutor_set]
+        
+        return {
+            "total_aulas": len(aulas_unicas),
+            "aulas_con_tutor": len(aulas_con_tutor),
+            "aulas_sin_tutor": aulas_sin_tutor,
+            "listo_para_generar_horario": len(aulas_sin_tutor) == 0 and len(aulas_unicas) > 0
+        }
+
+    notas_db = db.query(NotaDB.curso_id).filter(NotaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).distinct().all()
+    cursos_con_notas = set([n[0] for n in notas_db])
+    cursos_sin_notas = []
+    for c in cursos_db:
+        if c.id not in cursos_con_notas:
+            cursos_sin_notas.append(f"{c.nombre} ({c.grado}° {c.nivel} - {c.seccion})")
+
+    return {
+        "docentes_activos": docentes_activos,
+        "primaria": procesar_nivel("PRIMARIA"),
+        "secundaria": procesar_nivel("SECUNDARIA"),
+        "cierre_escolar": {
+            "cursos_sin_notas": cursos_sin_notas,
+            "listo_para_cierre": len(cursos_sin_notas) == 0
+        }
+    }
+
 @router.post("/admin/generar_horarios")
 async def admin_generar_horarios(
     nivel: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     try:
+        # VALIDACIÓN DURA DE PRERREQUISITOS DE TUTORÍA
+        aulas_query = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None))
+        tutores_query = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None))
+        if nivel:
+            aulas_query = aulas_query.filter(CursoDB.nivel == nivel)
+            tutores_query = tutores_query.filter(TutorDB.nivel == nivel)
+            
+        cursos_db = aulas_query.all()
+        aulas_unicas = set((c.nivel, c.grado, c.seccion) for c in cursos_db)
+        tutores_db = tutores_query.all()
+        aulas_con_tutor = set((t.nivel, t.grado, t.seccion) for t in tutores_db)
+        
+        sin_tutor = aulas_unicas - aulas_con_tutor
+        if sin_tutor:
+            lista_nombres = [f"{n} - {g}° - {s}" for n, g, s in sin_tutor]
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": f"Faltan tutores asignados en {nivel or 'la institución'}",
+                    "aulas_sin_tutor": lista_nombres
+                }
+            )
+
         resultado = generate_timetables(db, target_nivel=nivel)
         msg = f"Horarios de {nivel} generados" if nivel else "Horarios generados"
         return {
@@ -258,7 +375,10 @@ async def obtener_horario_aula(
     seccion: str,
     db: Session = Depends(get_db)
 ):
-    horarios = db.query(HorarioDB).filter(
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    horarios = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
         HorarioDB.nivel == nivel,
         HorarioDB.grado == grado,
         HorarioDB.seccion == seccion
@@ -266,7 +386,7 @@ async def obtener_horario_aula(
     
     resultado = []
     for h in horarios:
-        curso = db.query(CursoDB).filter(CursoDB.id == h.curso_id).first()
+        curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == h.curso_id).first()
         doc = db.query(UserDB).filter(UserDB.id == h.docente_id).first()
         resultado.append({
             "dia": h.dia,
@@ -289,6 +409,7 @@ class AsignacionInteligentePayload(BaseModel):
     primaria_tutores: dict  # {"1-A": 12, "1-B": 15}
     primaria_especialistas: dict # {"Inglés": [3, 4], "Religión": [5]}
     secundaria_cursos: dict # {"Matemática": [6, 7]}
+    secundaria_tutores: dict = {} # {"1-A": 12, "2-B": 15}
 
 @router.get("/admin/cursos_aula/{nivel}/{grado}/{seccion}")
 async def get_cursos_aula(
@@ -298,7 +419,10 @@ async def get_cursos_aula(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
-    cursos = db.query(CursoDB).filter(
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    cursos = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
         CursoDB.nivel == nivel,
         CursoDB.grado == grado,
         CursoDB.seccion == seccion
@@ -376,6 +500,7 @@ _CONTENIDO_SILABO = {
 }
 
 def _seed_silabo_por_defecto(db: Session, nivel: str, grado: int, curso_nombre: str, docente_id: int = None) -> SilaboTemDB:
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     """Crea un sílabo con contenido pedagogíco por defecto si no existe."""
     sistema_ev = "Escala literal: AD, A, B, C" if nivel == "PRIMARIA" else "Escala vigesimal: 00-20"
     
@@ -413,6 +538,9 @@ async def listar_silabos(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """Lista todos los sílabos. Los docentes solo ven los de su nivel."""
     query = db.query(SilaboTemDB)
     if nivel:
@@ -461,6 +589,9 @@ async def obtener_silabo_por_curso(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """
     Obtiene (o crea automáticamente) el sílabo de un curso específico.
     Si no existe, se genera con contenido pedagógico acorde al CN 2019.
@@ -484,6 +615,9 @@ async def obtener_silabo(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """Obtiene el detalle completo de un sílabo."""
     s = db.query(SilaboTemDB).filter(SilaboTemDB.id == silabo_id).first()
     if not s:
@@ -497,6 +631,9 @@ async def crear_silabo(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """Crea un sílabo nuevo. Si ya existe para ese nivel/grado/curso lo rechaza."""
     existe = db.query(SilaboTemDB).filter(
         SilaboTemDB.nivel == data.nivel,
@@ -528,6 +665,9 @@ async def actualizar_silabo(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """Actualiza los contenidos de un sílabo existente."""
     silabo = db.query(SilaboTemDB).filter(SilaboTemDB.id == silabo_id).first()
     if not silabo:
@@ -545,8 +685,7 @@ async def actualizar_silabo(
         if valor is not None:
             setattr(silabo, campo, valor)
     
-    from datetime import datetime
-    silabo.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    silabo.updated_at = ahora_lima().strftime("%Y-%m-%d %H:%M")
     silabo.docente_id = current_user.user_id  # Quien edita queda como dueño
     db.commit()
     return {"message": "Sílabo actualizado exitosamente."}
@@ -557,6 +696,9 @@ async def seed_silabos_todos(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """
     Admin: genera automáticamente sílabos base para todos los grados de
     Primaria (1-6) y Secundaria (1-5) usando el currículo nacional.
@@ -566,7 +708,7 @@ async def seed_silabos_todos(
     skipped = 0
     
     # Obtener todos los cursos registrados en la BD
-    todos_cursos = db.query(CursoDB).all()
+    todos_cursos = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
     procesados = set()
     
     for c in todos_cursos:
@@ -599,9 +741,12 @@ async def asignar_docentes_cursos(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     count = 0
     for asig in batch.asignaciones:
-        curso = db.query(CursoDB).filter(CursoDB.id == asig.curso_id).first()
+        curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == asig.curso_id).first()
         if curso:
             curso.docente_id = asig.docente_id
             count += 1
@@ -614,7 +759,10 @@ async def asignacion_inteligente(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
-    cursos = db.query(CursoDB).filter(CursoDB.nivel == payload.nivel).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    cursos = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.nivel == payload.nivel).all()
     
     # State tracking for round-robin distribution
     # keys: (nivel, course_name) -> index
@@ -654,30 +802,30 @@ async def asignacion_inteligente(
             else:
                 c.docente_id = None
                 
-    if payload.nivel == "PRIMARIA":
-        # Establecer la tutoría oficial para primaria en base a los tutores asignados
-        for key, tutor_id in payload.primaria_tutores.items():
-            if tutor_id:
-                try:
-                    grado_str, seccion = key.split('-')
-                    grado = int(grado_str)
-                    tutor_existente = db.query(TutorDB).filter(
-                        TutorDB.nivel == "PRIMARIA",
-                        TutorDB.grado == grado,
-                        TutorDB.seccion == seccion
-                    ).first()
-                    if tutor_existente:
-                        tutor_existente.docente_id = tutor_id
-                    else:
-                        nuevo_tutor = TutorDB(
-                            docente_id=tutor_id,
-                            nivel="PRIMARIA",
-                            grado=grado,
-                            seccion=seccion
-                        )
-                        db.add(nuevo_tutor)
-                except Exception as e:
-                    print(f"Error procesando tutoría de primaria para {key}: {e}")
+    # Establecer la tutoría oficial para el nivel en base a los tutores asignados
+    tutores_payload = payload.primaria_tutores if payload.nivel == "PRIMARIA" else payload.secundaria_tutores
+    for key, tutor_id in tutores_payload.items():
+        if tutor_id:
+            try:
+                grado_str, seccion = key.split('-')
+                grado = int(grado_str)
+                tutor_existente = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
+                    TutorDB.nivel == payload.nivel,
+                    TutorDB.grado == grado,
+                    TutorDB.seccion == seccion
+                ).first()
+                if tutor_existente:
+                    tutor_existente.docente_id = tutor_id
+                else:
+                    nuevo_tutor = TutorDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
+                        docente_id=tutor_id,
+                        nivel=payload.nivel,
+                        grado=grado,
+                        seccion=seccion
+                    )
+                    db.add(nuevo_tutor)
+            except Exception as e:
+                print(f"Error procesando tutoría de {payload.nivel} para {key}: {e}")
 
     db.commit()
     
@@ -691,7 +839,10 @@ async def docente_mi_horario(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
-    horarios = db.query(HorarioDB).filter(HorarioDB.docente_id == current_user.user_id).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    horarios = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(HorarioDB.docente_id == current_user.user_id).all()
     return _format_horario(horarios, db)
 
 @router.get("/admin/horarios/docente/{docente_id}")
@@ -700,13 +851,16 @@ async def admin_docente_horario(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
-    horarios = db.query(HorarioDB).filter(HorarioDB.docente_id == docente_id).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    horarios = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(HorarioDB.docente_id == docente_id).all()
     return _format_horario(horarios, db)
 
 def _format_horario(horarios, db):
     resultado = []
     for h in horarios:
-        curso = db.query(CursoDB).filter(CursoDB.id == h.curso_id).first()
+        curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == h.curso_id).first()
         doc = db.query(UserDB).filter(UserDB.id == h.docente_id).first()
         resultado.append({
             "dia": h.dia,
@@ -728,6 +882,9 @@ async def atender_cita_rendimiento(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["PSICOLOGO", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     cita = db.query(CitaDB).filter(CitaDB.id == cita_id).first()
     if not cita:
         raise HTTPException(status_code=404, detail="Cita no encontrada.")
@@ -781,6 +938,9 @@ async def pagar_matricula(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     # Registrar pago
     resultado = await orchestrator.registrar_pago(pago)
     
@@ -945,14 +1105,20 @@ async def get_docente_cursos(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE"]))
 ):
-    return db.query(CursoDB).filter(CursoDB.docente_id == current_user.user_id).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    return db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.docente_id == current_user.user_id).all()
 
 @router.get("/docente/tutorias")
 async def get_docente_tutorias(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE"]))
 ):
-    return db.query(TutorDB).filter(TutorDB.docente_id == current_user.user_id).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    return db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(TutorDB.docente_id == current_user.user_id).all()
 
 @router.get("/docente/alumnos")
 async def get_alumnos_docente(
@@ -960,9 +1126,12 @@ async def get_alumnos_docente(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     if not curso_id:
         return []
-    curso = db.query(CursoDB).filter(CursoDB.id == curso_id, CursoDB.docente_id == current_user.user_id).first()
+    curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == curso_id, CursoDB.docente_id == current_user.user_id).first()
     if not curso:
         raise HTTPException(status_code=403, detail="No tienes acceso a este curso.")
     
@@ -978,7 +1147,10 @@ async def get_alumnos_riesgo_tutor(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
-    tutoria = db.query(TutorDB).filter(TutorDB.docente_id == current_user.user_id).first()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    tutoria = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(TutorDB.docente_id == current_user.user_id).first()
     if not tutoria:
         return []
         
@@ -990,7 +1162,7 @@ async def get_alumnos_riesgo_tutor(
     
     resultados = []
     for a in alumnos:
-        notas = db.query(NotaDB).filter(NotaDB.alumno_id == a.id).all()
+        notas = db.query(NotaDB).filter(NotaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(NotaDB.alumno_id == a.id).all()
         # Calculamos riesgo básico si tienen muchas notas bajas
         # En primaria: muchas 'C'. En secundaria: muchas < 11
         riesgo = False
@@ -1016,9 +1188,12 @@ async def registrar_asistencia_batch(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     alumnos_modificados = set()
     for asis in batch.asistencias:
-        nueva_asistencia = AsistenciaDB(
+        nueva_asistencia = AsistenciaDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
             alumno_id=asis.alumno_id,
             fecha=asis.fecha,
             estado=asis.estado
@@ -1034,7 +1209,7 @@ async def registrar_asistencia_batch(
     from core.antigravity import school_db
     
     for alumno_id in alumnos_modificados:
-        todas = db.query(AsistenciaDB).filter(AsistenciaDB.alumno_id == alumno_id).all()
+        todas = db.query(AsistenciaDB).filter(AsistenciaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(AsistenciaDB.alumno_id == alumno_id).all()
         total_dias = len(todas)
         faltas = len([a for a in todas if a.estado == 'Falta'])
         
@@ -1069,13 +1244,16 @@ async def subir_notas_batch(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     # Agrupar por curso_id para no hacer queries redundantes si vienen muchas notas del mismo curso
     cursos_cacheados = {}
 
     for registro in batch.notas:
         curso_id = registro.curso_id
         if curso_id not in cursos_cacheados:
-            curso = db.query(CursoDB).filter(CursoDB.id == curso_id).first()
+            curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == curso_id).first()
             if not curso:
                 raise HTTPException(status_code=404, detail=f"Curso {curso_id} no encontrado.")
             # Si el usuario NO es admin, verificamos que sea el dueño del curso
@@ -1083,7 +1261,7 @@ async def subir_notas_batch(
                 raise HTTPException(status_code=403, detail="No tienes permiso para calificar este curso.")
             cursos_cacheados[curso_id] = curso
 
-        nueva_nota = NotaDB(
+        nueva_nota = NotaDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
             alumno_id=registro.alumno_id,
             curso_id=registro.curso_id,
             docente_id=current_user.user_id,
@@ -1107,11 +1285,13 @@ async def agregar_observacion_tutor(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
-    from datetime import datetime
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     nueva_obs = ObservacionDB(
         alumno_id=req.alumno_id,
         docente_id=current_user.user_id,
-        fecha=datetime.now().strftime("%d/%m/%Y"),
+        fecha=ahora_lima().strftime("%d/%m/%Y"),
         texto=req.texto
     )
     db.add(nueva_obs)
@@ -1131,7 +1311,7 @@ async def agregar_observacion_tutor(
             cita_urgencia = CitaDB(
                 alumno_id=req.alumno_id,
                 motivo=f"🚨 ALERTA IA ANTIBULLYING ({analisis.nivel_urgencia}): {analisis.justificacion}",
-                dia=datetime.now().strftime("%d/%m/%Y"),
+                dia=ahora_lima().strftime("%d/%m/%Y"),
                 hora="URGENCIA",
                 estado="Pendiente"
             )
@@ -1164,6 +1344,7 @@ async def agregar_observacion_tutor(
 
 @router.get("/tutor/horarios_disponibles")
 async def tutor_horarios_disponibles(db: Session = Depends(get_db)):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     dias_laborables = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     horas_posibles = ["14:00", "15:00", "16:00", "17:00"]
     
@@ -1188,6 +1369,9 @@ async def agendar_cita_tutor(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["DOCENTE", "ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     # Validar colision
     existente = db.query(CitaDB).filter(
         CitaDB.dia == cita.dia, 
@@ -1265,6 +1449,9 @@ async def get_padre_libreta(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ALUMNO_PADRE"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     # Encontrar hijos
     alumnos = db.query(AlumnoDB).filter(AlumnoDB.apoderado_id == current_user.user_id).all()
     if not alumnos:
@@ -1273,12 +1460,12 @@ async def get_padre_libreta(
     alumno = alumnos[0] # Tomamos el primero para la demo
     
     # Extraer notas
-    notas = db.query(NotaDB).filter(NotaDB.alumno_id == alumno.id).all()
+    notas = db.query(NotaDB).filter(NotaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(NotaDB.alumno_id == alumno.id).all()
     
     # Procesar la libreta consolidando por curso
     libreta_dict = {}
     for n in notas:
-        curso = db.query(CursoDB).filter(CursoDB.id == n.curso_id).first()
+        curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == n.curso_id).first()
         nombre_curso = curso.nombre if curso else f"Curso {n.curso_id}"
         if nombre_curso not in libreta_dict:
             libreta_dict[nombre_curso] = {"curso": nombre_curso, "criterios": {}}
@@ -1290,7 +1477,7 @@ async def get_padre_libreta(
     state = await school_db.get_state()
     alertas_ia = [a for a in state.get("alertas_ia", []) if a.get("apoderado_id") == current_user.user_id]
         
-    tutor_db = db.query(TutorDB).filter(
+    tutor_db = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
         TutorDB.nivel.ilike(alumno.nivel),
         TutorDB.grado == alumno.grado,
         TutorDB.seccion == alumno.seccion
@@ -1301,7 +1488,7 @@ async def get_padre_libreta(
         tutor_user = db.query(UserDB).filter(UserDB.id == tutor_db.docente_id).first()
         if tutor_user: tutor_nombre = tutor_user.username
         
-    asistencias_db = db.query(AsistenciaDB).filter(AsistenciaDB.alumno_id == alumno.id).all()
+    asistencias_db = db.query(AsistenciaDB).filter(AsistenciaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(AsistenciaDB.alumno_id == alumno.id).all()
     asistencias = [{"fecha": a.fecha, "estado": a.estado} for a in asistencias_db]
 
     total_dias = len(asistencias_db)
@@ -1321,7 +1508,7 @@ async def get_padre_libreta(
 
     citas_pendientes = db.query(CitaDB).filter(CitaDB.alumno_id == alumno.id, CitaDB.estado == "Pendiente", CitaDB.motivo == "Rendimiento").all()
         
-    horarios = db.query(HorarioDB).filter(
+    horarios = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
         HorarioDB.nivel == alumno.nivel.upper(),
         HorarioDB.grado == alumno.grado,
         HorarioDB.seccion == alumno.seccion
@@ -1329,7 +1516,7 @@ async def get_padre_libreta(
     
     horario_lista = []
     for h in horarios:
-        curso = db.query(CursoDB).filter(CursoDB.id == h.curso_id).first()
+        curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == h.curso_id).first()
         doc = db.query(UserDB).filter(UserDB.id == h.docente_id).first() if h.docente_id else None
         horario_lista.append({
             "dia": h.dia,
@@ -1339,14 +1526,21 @@ async def get_padre_libreta(
             "docente": doc.username if doc else "Sin Asignar"
         })
 
+    matricula_obj = db.query(MatriculaDB).filter(MatriculaDB.alumno_id == alumno.id, MatriculaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).first()
+    estado_matricula = matricula_obj.estado_matricula if matricula_obj else "PENDIENTE_PAGO"
+
     return {
         "alumno": {
+            "id": alumno.id,
             "nombres": alumno.nombres,
             "nivel": alumno.nivel,
             "grado": alumno.grado,
             "seccion": alumno.seccion,
-            "tutor": tutor_nombre
+            "tutor": tutor_nombre,
+            "estado_matricula": estado_matricula,
+            "estado_continuidad": alumno.estado_continuidad
         },
+        "anio_escolar_estado": anio_activo.estado if anio_activo else "CERRADO",
         "libreta": list(libreta_dict.values()),
         "horario": horario_lista,
         "asistencias": asistencias,
@@ -1355,6 +1549,19 @@ async def get_padre_libreta(
         "citas_psicologia": [{"dia": c.dia, "hora": c.hora, "motivo": c.motivo} for c in citas_pendientes],
         "alertas_ia": alertas_ia
     }
+
+class RatificarVacanteReq(BaseModel):
+    continuidad: str
+
+@router.post("/padre/ratificar_vacante")
+async def ratificar_vacante(req: RatificarVacanteReq, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ALUMNO_PADRE"]))):
+    alumno = db.query(AlumnoDB).filter(AlumnoDB.apoderado_id == current_user.user_id).first()
+    if not alumno:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado")
+    
+    alumno.estado_continuidad = "RATIFICADO" if req.continuidad.upper() == "SI" else "NO_CONTINUARA"
+    db.commit()
+    return {"message": f"Se ha registrado su respuesta ({req.continuidad}). Gracias."}
 
 # ======================================================================
 # Admin
@@ -1366,10 +1573,12 @@ async def get_telemetry(current_user: TokenData = Depends(require_role(["ADMIN"]
 
 @router.get("/admin/docentes")
 async def list_docentes(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     return db.query(UserDB).filter(UserDB.role == "DOCENTE").all()
 
 @router.get("/admin/citas_historial")
 async def historial_citas_admin(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN", "PSICOLOGO"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     citas = db.query(CitaDB).all()
     resultado = []
     for c in citas:
@@ -1391,6 +1600,9 @@ async def get_state(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN", "PSICOLOGO", "DOCENTE"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     state = await school_db.get_state()
     # Reconstruir enrolled_students SIEMPRE desde Postgres como fuente de verdad.
     # Si solo se hace un merge aditivo, los alumnos borrados directamente en la BD
@@ -1398,6 +1610,9 @@ async def get_state(
     db_students = db.query(AlumnoDB).all()
 
     # Reconstruir limpio desde Postgres — esto sincroniza borrados en BD
+    state["has_horario_primaria"] = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(HorarioDB.nivel == "PRIMARIA").first() is not None
+    state["has_horario_secundaria"] = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(HorarioDB.nivel == "SECUNDARIA").first() is not None
+
     state["enrolled_students"] = {
         al.codigo_est: {
             "nombres": al.nombres,
@@ -1413,8 +1628,8 @@ async def get_state(
     }
 
     # RECONSTRUIR notas_trimestrales desde NotaDB
-    notas_db = db.query(NotaDB).all()
-    cursos_db = db.query(CursoDB).all()
+    notas_db = db.query(NotaDB).filter(NotaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
+    cursos_db = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
     cursos_map = {c.id: c.nombre for c in cursos_db}
     
     notas_dict = {}
@@ -1452,6 +1667,7 @@ async def get_state(
 
 @router.post("/admin/cursos/asignacion_primaria_ia")
 async def asignacion_primaria_ia(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     import json
     from langchain_groq import ChatGroq
     from langchain_core.prompts import PromptTemplate
@@ -1497,7 +1713,8 @@ Responde ÚNICAMENTE con un JSON en el siguiente formato, sin markdown ni comill
 
 @router.get("/admin/cursos_list")
 async def list_cursos_admin(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
-    cursos = db.query(CursoDB).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    cursos = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
     return [{"id": c.id, "nombre": c.nombre, "nivel": c.nivel, "grado": c.grado, "seccion": c.seccion or "A", "docente_id": c.docente_id} for c in cursos]
 
 @router.get("/cursos/nombres-unicos")
@@ -1506,6 +1723,9 @@ async def get_cursos_nombres_unicos(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     """
     Devuelve nombres únicos de cursos agrupados por nivel.
     Alimenta el multi-select de Especialización en el formulario de registro de docente.
@@ -1552,6 +1772,7 @@ async def get_task_status(
 class UserCreate(BaseModel):
     username: str
     password: str
+    nombre_completo: Optional[str] = None
     role: str
     nivel_asignado: Optional[str] = None
     especializaciones: Optional[List[dict]] = None
@@ -1565,6 +1786,9 @@ async def create_user(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     if user.role not in ["DOCENTE", "PSICOLOGO", "SECRETARIO"]:
         raise HTTPException(status_code=400, detail="Rol inválido. Solo DOCENTE, PSICOLOGO o SECRETARIO.")
     if db.query(UserDB).filter(UserDB.username == user.username).first():
@@ -1595,7 +1819,7 @@ async def create_user(
                     status_code=422,
                     detail=f"La especialización '{curso_nombre}' es de nivel {nivel_esp}, pero el docente es de nivel {nivel_docente}. Los docentes peruanos se forman en un único nivel."
                 )
-            existe_curso = db.query(CursoDB).filter(
+            existe_curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
                 CursoDB.nombre == curso_nombre,
                 CursoDB.nivel == nivel_esp
             ).first()
@@ -1608,6 +1832,7 @@ async def create_user(
     new_user = UserDB(
         username=user.username,
         hashed_password=get_password_hash(user.password),
+        nombre_completo=user.nombre_completo,
         role=user.role,
         nivel_asignado=user.nivel_asignado
     )
@@ -1618,7 +1843,7 @@ async def create_user(
     # Insertar especializaciones si es DOCENTE
     if user.role == "DOCENTE" and user.especializaciones:
         for esp in user.especializaciones:
-            nueva_esp = DocenteEspecialidadDB(
+            nueva_esp = DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB(
                 docente_id=new_user.id,
                 curso_nombre=esp["curso_nombre"].strip(),
                 nivel=esp["nivel"].strip().upper()
@@ -1633,6 +1858,9 @@ async def get_users(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     users = db.query(UserDB).filter(UserDB.role.in_(["DOCENTE", "PSICOLOGO", "SECRETARIO"])).all()
     result = []
     for u in users:
@@ -1642,8 +1870,8 @@ async def get_users(
             "especializaciones": []
         }
         if u.role == "DOCENTE":
-            esps = db.query(DocenteEspecialidadDB).filter(
-                DocenteEspecialidadDB.docente_id == u.id
+            esps = db.query(DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB).filter(
+                DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB.docente_id == u.id
             ).all()
             data["especializaciones"] = [
                 {"curso_nombre": e.curso_nombre, "nivel": e.nivel} for e in esps
@@ -1657,6 +1885,9 @@ async def toggle_user_status(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -1680,6 +1911,9 @@ async def create_curso(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     creados = []
     omitidos = []
 
@@ -1695,7 +1929,7 @@ async def create_curso(
 
         for seccion in secciones:
             # Validar duplicado
-            existe = db.query(CursoDB).filter(
+            existe = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
                 CursoDB.nombre == curso.nombre,
                 CursoDB.nivel == curso.nivel,
                 CursoDB.grado == grado,
@@ -1706,7 +1940,7 @@ async def create_curso(
                 omitidos.append(f"{grado}°{seccion}")
                 continue
 
-            nuevo = CursoDB(
+            nuevo = CursoDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
                 nombre=curso.nombre,
                 nivel=curso.nivel,
                 grado=grado,
@@ -1738,7 +1972,10 @@ def asignar_docente_curso(
     db: Session = Depends(get_db), 
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
-    curso = db.query(CursoDB).filter(CursoDB.id == curso_id).first()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
+    curso = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.id == curso_id).first()
     if not curso:
         raise HTTPException(status_code=404, detail="Curso no encontrado")
     
@@ -1757,10 +1994,13 @@ async def create_aula_primaria(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     # Cursos base
     cursos_base = ["Matemática", "Comunicación", "Ciencias Naturales", "Personal Social"]
     for c in cursos_base:
-        nuevo_curso = CursoDB(
+        nuevo_curso = CursoDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
             nombre=c,
             nivel="PRIMARIA",
             grado=aula.grado,
@@ -1770,7 +2010,7 @@ async def create_aula_primaria(
         db.add(nuevo_curso)
     
     # Asignar tutor automáticamente
-    tutor_existente = db.query(TutorDB).filter(
+    tutor_existente = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
         TutorDB.docente_id == aula.docente_id,
         TutorDB.nivel == "PRIMARIA",
         TutorDB.grado == aula.grado,
@@ -1778,7 +2018,7 @@ async def create_aula_primaria(
     ).first()
     
     if not tutor_existente:
-        nuevo_tutor = TutorDB(
+        nuevo_tutor = TutorDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
             docente_id=aula.docente_id,
             nivel="PRIMARIA",
             grado=aula.grado,
@@ -1795,13 +2035,16 @@ async def create_tutor(
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(require_role(["ADMIN"]))
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     # Validar que el docente no sea ya tutor de otra sección
-    tutor_existente = db.query(TutorDB).filter(TutorDB.docente_id == tutor.docente_id).first()
+    tutor_existente = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(TutorDB.docente_id == tutor.docente_id).first()
     if tutor_existente:
         raise HTTPException(status_code=400, detail=f"Este docente ya es tutor de la sección {tutor_existente.grado}º {tutor_existente.seccion} {tutor_existente.nivel}.")
         
     # Validar que el aula no tenga ya un tutor
-    aula_existente = db.query(TutorDB).filter(
+    aula_existente = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(
         TutorDB.nivel == tutor.nivel,
         TutorDB.grado == tutor.grado,
         TutorDB.seccion == tutor.seccion
@@ -1809,7 +2052,7 @@ async def create_tutor(
     if aula_existente:
         raise HTTPException(status_code=400, detail=f"El aula {tutor.grado}º {tutor.seccion} {tutor.nivel} ya tiene un tutor asignado.")
 
-    nuevo = TutorDB(
+    nuevo = TutorDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
         docente_id=tutor.docente_id,
         nivel=tutor.nivel,
         grado=tutor.grado,
@@ -1821,7 +2064,8 @@ async def create_tutor(
 
 @router.get("/admin/tutores_asignados")
 async def list_tutores_asignados(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
-    tutores = db.query(TutorDB).all()
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    tutores = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
     resultado = []
     for t in tutores:
         doc = db.query(UserDB).filter(UserDB.id == t.docente_id).first()
@@ -1835,104 +2079,353 @@ async def list_tutores_asignados(db: Session = Depends(get_db), current_user: To
             })
     return {"tutores": resultado}
 
-@router.post("/admin/cierre_escolar")
-async def cierre_escolar(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
-    alumnos = db.query(AlumnoDB).all()
+@router.delete("/admin/tutores/{tutor_id}")
+async def eliminar_tutor(tutor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    tutor = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(TutorDB.id == tutor_id).first()
+    if not tutor:
+        raise HTTPException(status_code=404, detail="Tutor no encontrado")
+    db.delete(tutor)
+    db.commit()
+    return {"message": "Tutor eliminado exitosamente"}
+
+@router.post("/admin/purgar_matriculas_vencidas")
+async def purgar_matriculas_vencidas(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo.")
     
-    for alumno in alumnos:
-        # Calcular promedio
-        notas = db.query(NotaDB).filter(NotaDB.alumno_id == alumno.id).all()
-        promedio = 0.0
+    hoy = ahora_lima().strftime("%Y-%m-%d")
+    
+    # 1. Purga Temprana: Alumnos con estado_continuidad == 'PENDIENTE'
+    # 2. Purga Final: Alumnos con PENDIENTE_PAGO que pasaron su limite de rematricula
+    # Asumimos limite_rematricula es "YYYY-MM-DD"
+    
+    count_temprana = 0
+    count_final = 0
+    
+    alumnos_pendientes_encuesta = db.query(AlumnoDB).filter(AlumnoDB.estado_continuidad == "PENDIENTE").all()
+    for alumno in alumnos_pendientes_encuesta:
+        # Liberamos cupo (se quita su matrícula pendiente)
+        mat = db.query(MatriculaDB).filter(MatriculaDB.alumno_id == alumno.id, MatriculaDB.anio_escolar_id == anio_activo.id, MatriculaDB.estado_matricula == "PENDIENTE_PAGO").first()
+        if mat:
+            db.delete(mat)
+            alumno.estado = "Retirado"
+            count_temprana += 1
+            if alumno.apoderado_id:
+                apoderado = db.query(UserDB).filter(UserDB.id == alumno.apoderado_id).first()
+                if apoderado:
+                    apoderado.is_active = False
+                    apoderado.motivo_inactivo = "RETIRADO"
+
+    if anio_activo.limite_rematricula and hoy > anio_activo.limite_rematricula:
+        matriculas_pendientes = db.query(MatriculaDB).filter(
+            MatriculaDB.anio_escolar_id == anio_activo.id,
+            MatriculaDB.estado_matricula.in_(["PENDIENTE_PAGO", "PENDIENTE_RECUPERACION"])
+        ).all()
         
-        if not notas:
-            alumno.promedio_final = 0.0
-            alumno.estado = "Repitente"
-        else:
-            if alumno.nivel == "PRIMARIA":
-                # Primaria usa letras. Simplificamos: A=15, B=12, C=10, AD=18
-                sum_letras = 0
-                count_letras = 0
-                for n in notas:
-                    if n.valor_letra:
-                        count_letras += 1
-                        if n.valor_letra == "AD": sum_letras += 18
-                        elif n.valor_letra == "A": sum_letras += 15
-                        elif n.valor_letra == "B": sum_letras += 12
-                        else: sum_letras += 10
-                promedio = sum_letras / count_letras if count_letras > 0 else 0
-            else:
-                # Secundaria: Calculamos con base en promedios numéricos
-                # Simplificación: promedio aritmético de las notas del estudiante. En realidad NotaDB guarda JSON.
-                # Como NotaDB en el backend original almacena "valor_letra" o criterios en la tabla original o en state:
-                # Pero la estructura usa `valor_letra` en db o `criterios` en DB/state.
-                sum_num = 0
-                count_num = 0
-                for n in notas:
-                    if n.valor_letra:
-                        try:
-                            sum_num += float(n.valor_letra)
-                            count_num += 1
-                        except:
-                            pass
-                promedio = sum_num / count_num if count_num > 0 else 0.0
-                
-            alumno.promedio_final = round(promedio, 2)
-            if promedio >= 11.0:
-                alumno.estado = "Aprobado"
-                # Enviar correo de diploma
+        for mat in matriculas_pendientes:
+            alumno = db.query(AlumnoDB).filter(AlumnoDB.id == mat.alumno_id).first()
+            if alumno:
+                db.delete(mat)
+                alumno.estado = "Retirado"
+                count_final += 1
                 if alumno.apoderado_id:
                     apoderado = db.query(UserDB).filter(UserDB.id == alumno.apoderado_id).first()
-                    if apoderado and apoderado.email:
-                        msg = f"DIPLOMA DE EXCELENCIA\n\nEstimado apoderado, felicitamos a su menor hijo {alumno.nombres} por haber aprobado el año escolar satisfactoriamente con un promedio de {alumno.promedio_final}."
-                        try:
-                            import smtplib
-                            from email.mime.text import MIMEText
-                            from email.mime.multipart import MIMEMultipart
-                            s = smtplib.SMTP('smtp.gmail.com', 587)
-                            s.starttls()
-                            s.login("iep.josemariaarguedas.1998@gmail.com", "bpxo yoxl aaqe jbpt")
-                            correo = MIMEMultipart()
-                            correo['From'] = "iep.josemariaarguedas.1998@gmail.com"
-                            correo['To'] = apoderado.email
-                            correo['Subject'] = "Diploma de Fin de Año"
-                            correo.attach(MIMEText(msg, 'plain'))
-                            s.send_message(correo)
-                            s.quit()
-                        except Exception as e:
-                            print("Error enviando correo de fin de año:", e)
-            else:
-                alumno.estado = "Repitente"
-                if alumno.apoderado_id:
-                    apoderado = db.query(UserDB).filter(UserDB.id == alumno.apoderado_id).first()
-                    if apoderado and apoderado.email:
-                        msg = f"REPORTE ACADÉMICO\n\nEstimado apoderado, se le informa que su menor hijo {alumno.nombres} no ha superado el promedio mínimo (promedio final: {alumno.promedio_final}) y repite de año."
-                        try:
-                            import smtplib
-                            from email.mime.text import MIMEText
-                            from email.mime.multipart import MIMEMultipart
-                            s = smtplib.SMTP('smtp.gmail.com', 587)
-                            s.starttls()
-                            s.login("iep.josemariaarguedas.1998@gmail.com", "bpxo yoxl aaqe jbpt")
-                            correo = MIMEMultipart()
-                            correo['From'] = "iep.josemariaarguedas.1998@gmail.com"
-                            correo['To'] = apoderado.email
-                            correo['Subject'] = "Reporte Académico de Fin de Año"
-                            correo.attach(MIMEText(msg, 'plain'))
-                            s.send_message(correo)
-                            s.quit()
-                        except Exception as e:
-                            print("Error enviando correo de fin de año:", e)
-    # Limpieza de tutores y horarios
-    db.query(HorarioDB).delete()
-    db.query(TutorDB).delete()
-    
-    # También limpiar asignaciones de cursos a docentes
-    cursos = db.query(CursoDB).all()
-    for c in cursos:
-        c.docente_id = None
+                    if apoderado and apoderado.is_active:
+                        apoderado.is_active = False
+                        apoderado.motivo_inactivo = "RETIRADO"
 
     db.commit()
-    return {"message": "Cierre de año ejecutado. Promedios calculados, estados actualizados, horarios y tutores reiniciados."}
+    return {
+        "message": f"Se liberaron {count_temprana} cupos por Purga Temprana y {count_final} por Purga Final de Morosos.",
+        "purgados_temprana": count_temprana,
+        "purgados_final": count_final
+    }
+
+
+@router.post("/admin/cierre_escolar")
+async def cierre_escolar(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ADMIN"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año activo para cerrar.")
+    
+    try:
+        evaluados = 0
+        status_counts = {"Aprobado": 0, "Recuperacion": 0, "Repitente": 0}
+        certificates_generated = {"MERITO": 0, "CONCLUSION_PRIMARIA": 0, "CONCLUSION_SECUNDARIA": 0}
+        failed_emails = 0
+        
+        # 1. Crear nuevo año
+        nuevo_anio_val = anio_activo.anio + 1
+        nuevo_anio = AnioEscolarDB(anio=nuevo_anio_val, estado="ACTIVO")
+        db.add(nuevo_anio)
+        db.flush()
+        
+        matriculas_actuales = db.query(MatriculaDB).filter(MatriculaDB.anio_escolar_id == anio_activo.id).all()
+        
+        # Pre-cargar cursos y notas
+        cursos_cerrados = db.query(CursoDB).filter(CursoDB.anio_escolar_id == anio_activo.id).all()
+        cursos_por_id = {c.id: c for c in cursos_cerrados}
+        
+        notas_anio = db.query(NotaDB).filter(NotaDB.anio_escolar_id == anio_activo.id).all()
+        notas_por_alumno = defaultdict(list)
+        for n in notas_anio:
+            if n.curso_id:
+                notas_por_alumno[n.alumno_id].append(n)
+        
+        # Para ranking
+        ranking_por_aula = defaultdict(list)
+        
+        # EVALUACIÓN DE MATRÍCULAS
+        for matricula in matriculas_actuales:
+            alumno = db.query(AlumnoDB).filter(AlumnoDB.id == matricula.alumno_id).first()
+            if not alumno:
+                continue
+            evaluados += 1
+
+            notas_alumno = notas_por_alumno[alumno.id]
+            notas_por_curso = defaultdict(list)
+            for n in notas_alumno:
+                notas_por_curso[n.curso_id].append(n)
+            
+            jalados = 0
+            sum_promedios_curso = 0.0
+            count_cursos = len(cursos_cerrados) # Calculamos en base al total de cursos en el año
+            
+            # Obtener los IDs de todos los cursos que corresponden al nivel/grado/sección del alumno
+            cursos_del_alumno = [c.id for c in cursos_cerrados if c.nivel == matricula.nivel and c.grado == matricula.grado and c.seccion == matricula.seccion]
+            count_cursos_real = len(cursos_del_alumno)
+            
+            cursos_a_recuperacion = []
+
+            for curso_id in cursos_del_alumno:
+                notas_curso = notas_por_curso.get(curso_id, [])
+                promedio_curso = 0.0
+                
+                if not notas_curso:
+                    # Sin notas registradas: asume 0 y por ende jalado.
+                    jalados += 1
+                    cursos_a_recuperacion.append(curso_id)
+                else:
+                    if matricula.nivel == "PRIMARIA":
+                        # Primaria: A=15, B=12, C=10, AD=18
+                        sum_letras = 0
+                        count_letras = 0
+                        for n in notas_curso:
+                            if n.valor_letra:
+                                count_letras += 1
+                                if n.valor_letra == "AD": sum_letras += 18
+                                elif n.valor_letra == "A": sum_letras += 15
+                                elif n.valor_letra == "B": sum_letras += 12
+                                else: sum_letras += 10 # Incluye "C" u otros
+                        promedio_curso = sum_letras / count_letras if count_letras > 0 else 0.0
+                        
+                        sum_promedios_curso += promedio_curso
+                        if promedio_curso <= 10.5: # 10 = C
+                            jalados += 1
+                            cursos_a_recuperacion.append(curso_id)
+                    else:
+                        # Secundaria
+                        sum_num = 0.0
+                        count_num = 0
+                        for n in notas_curso:
+                            if n.valor_numerico is not None:
+                                sum_num += n.valor_numerico
+                                count_num += 1
+                        promedio_curso = sum_num / count_num if count_num > 0 else 0.0
+                        
+                        sum_promedios_curso += promedio_curso
+                        if promedio_curso < 11.0:
+                            jalados += 1
+                            cursos_a_recuperacion.append(curso_id)
+            
+            # Promedio final aritmético de todos los cursos
+            promedio_final = sum_promedios_curso / count_cursos_real if count_cursos_real > 0 else 0.0
+            matricula.promedio_final = round(promedio_final, 2)
+            
+            # Evaluación final
+            if jalados == 0:
+                matricula.estado_final = "Aprobado"
+            elif jalados <= 2:
+                matricula.estado_final = "Recuperacion"
+            else:
+                matricula.estado_final = "Repitente"
+                
+            status_counts[matricula.estado_final] += 1
+                
+            # Agregar al ranking del aula (nivel, grado, seccion)
+            aula_key = (matricula.nivel, matricula.grado, matricula.seccion)
+            ranking_por_aula[aula_key].append(matricula)
+                
+            # PROCESAR TRANSICIÓN A NUEVO AÑO
+            if matricula.estado_final == "Aprobado":
+                if matricula.nivel == "SECUNDARIA" and matricula.grado == 5:
+                    alumno.estado = "EGRESADO"
+                    if alumno.apoderado_id:
+                        apoderado = db.query(UserDB).filter(UserDB.id == alumno.apoderado_id).first()
+                        if apoderado:
+                            apoderado.is_active = False
+                            apoderado.motivo_inactivo = "EGRESADO"
+                    
+                    ruta_pdf = generar_certificado_pdf(db, matricula, anio_activo, "CONCLUSION_SECUNDARIA", promedio=matricula.promedio_final)
+                    db.add(CertificadoDB(alumno_id=alumno.id, anio_escolar_id=anio_activo.id, tipo="CONCLUSION_SECUNDARIA", fecha_generacion=ahora_lima().strftime("%Y-%m-%d"), ruta_archivo=ruta_pdf, storage_type="CLOUDINARY"))
+                    certificates_generated["CONCLUSION_SECUNDARIA"] += 1
+                
+                elif matricula.nivel == "PRIMARIA" and matricula.grado == 6:
+                    ruta_pdf = generar_certificado_pdf(db, matricula, anio_activo, "CONCLUSION_PRIMARIA", promedio=matricula.promedio_final)
+                    db.add(CertificadoDB(alumno_id=alumno.id, anio_escolar_id=anio_activo.id, tipo="CONCLUSION_PRIMARIA", fecha_generacion=ahora_lima().strftime("%Y-%m-%d"), ruta_archivo=ruta_pdf, storage_type="CLOUDINARY"))
+                    certificates_generated["CONCLUSION_PRIMARIA"] += 1
+                    db.add(MatriculaDB(alumno_id=alumno.id, anio_escolar_id=nuevo_anio.id, nivel="SECUNDARIA", grado=1, seccion=matricula.seccion, estado_matricula="PENDIENTE_PAGO"))
+                else:
+                    db.add(MatriculaDB(alumno_id=alumno.id, anio_escolar_id=nuevo_anio.id, nivel=matricula.nivel, grado=matricula.grado + 1, seccion=matricula.seccion, estado_matricula="PENDIENTE_PAGO"))
+                    
+            elif matricula.estado_final == "Repitente":
+                db.add(MatriculaDB(alumno_id=alumno.id, anio_escolar_id=nuevo_anio.id, nivel=matricula.nivel, grado=matricula.grado, seccion=matricula.seccion, estado_matricula="PENDIENTE_PAGO"))
+                
+            elif matricula.estado_final == "Recuperacion":
+                nivel_sig = "SECUNDARIA" if matricula.nivel == "PRIMARIA" and matricula.grado == 6 else matricula.nivel
+                grado_sig = 1 if matricula.nivel == "PRIMARIA" and matricula.grado == 6 else matricula.grado + 1
+                if matricula.nivel == "SECUNDARIA" and matricula.grado == 5:
+                    grado_sig = 5 
+                    
+                db.add(MatriculaDB(alumno_id=alumno.id, anio_escolar_id=nuevo_anio.id, nivel=nivel_sig, grado=grado_sig, seccion=matricula.seccion, estado_matricula="PENDIENTE_RECUPERACION"))
+                
+                # Insertar los cursos en CursoRecuperacionDB
+                for cid in cursos_a_recuperacion:
+                    db.add(CursoRecuperacionDB(matricula_id=matricula.id, curso_id=cid, estado="PENDIENTE"))
+        
+        db.flush()
+
+        # RANKING Y CERTIFICADOS DE MÉRITO (Top 2 por aula)
+        os.makedirs("certificados", exist_ok=True) # Crear carpeta si no existe
+
+        # Variables para SMTP
+        import logging
+        from email import encoders
+        from email.mime.base import MIMEBase
+        
+        smtp_password = os.getenv("SMTP_PASSWORD")
+        smtp_user = os.getenv("SMTP_USER")
+        
+        def enviar_correo_seguro(destino, asunto, mensaje, attachment_path=None):
+            if not smtp_password or not smtp_user:
+                return
+            try:
+                s = smtplib.SMTP('smtp.gmail.com', 587)
+                s.starttls()
+                s.login(smtp_user, smtp_password)
+                correo = MIMEMultipart()
+                correo['From'] = smtp_user
+                correo['To'] = destino
+                correo['Subject'] = asunto
+                correo.attach(MIMEText(mensaje, 'plain'))
+                
+                if attachment_path:
+                    import requests
+                    file_data = None
+                    filename = "documento.pdf"
+                    
+                    if attachment_path.startswith("http"):
+                        try:
+                            resp = requests.get(attachment_path, timeout=10)
+                            if resp.status_code == 200:
+                                file_data = resp.content
+                                filename = attachment_path.split("/")[-1]
+                        except Exception as e:
+                            logging.error(f"Error descargando adjunto {attachment_path}: {e}")
+                    elif os.path.exists(attachment_path):
+                        with open(attachment_path, "rb") as attachment:
+                            file_data = attachment.read()
+                        filename = os.path.basename(attachment_path)
+                        
+                    if file_data:
+                        part = MIMEBase("application", "octet-stream")
+                        part.set_payload(file_data)
+                        encoders.encode_base64(part)
+                        part.add_header("Content-Disposition", f"attachment; filename= {filename}")
+                        correo.attach(part)
+                    
+                s.send_message(correo)
+                s.quit()
+                return True
+            except Exception as e:
+                logging.error(f"Error enviando correo a {destino}: {str(e)}")
+                return False
+
+        for aula_key, mats_aula in ranking_por_aula.items():
+            # Ordenar descendente por promedio
+            mats_aula.sort(key=lambda x: (x.promedio_final or 0.0), reverse=True)
+            
+            for idx, mat in enumerate(mats_aula):
+                puesto = idx + 1
+                mat.puesto = puesto
+                alumno = db.query(AlumnoDB).filter(AlumnoDB.id == mat.alumno_id).first()
+                apoderado = db.query(UserDB).filter(UserDB.id == alumno.apoderado_id).first() if alumno.apoderado_id else None
+                
+                # Generamos certificado de MÉRITO solo para 1er y 2do puesto
+                if puesto <= 2 and mat.estado_final == "Aprobado":
+                    ruta_pdf = generar_certificado_pdf(db, mat, anio_activo, "MERITO", puesto=puesto, promedio=mat.promedio_final)
+                    
+                    # Generar URL firmada temporal (1 hora) para adjuntar al correo
+                    import time
+                    import cloudinary.utils
+                    signed_url, _ = cloudinary.utils.cloudinary_url(
+                        ruta_pdf,
+                        resource_type="raw",
+                        type="authenticated",
+                        sign_url=True,
+                        expires_at=int(time.time()) + 3600
+                    )
+
+                    db.add(CertificadoDB(
+                        alumno_id=mat.alumno_id,
+                        anio_escolar_id=anio_activo.id,
+                        tipo="MERITO",
+                        puesto=puesto,
+                        ruta_archivo=ruta_pdf,
+                        storage_type="CLOUDINARY",
+                        fecha_generacion=ahora_lima().strftime("%Y-%m-%d")
+                    ))
+                    certificates_generated["MERITO"] += 1
+                    
+                    # Mailing - Diploma (Se envía DESPUÉS de haber generado el archivo ruta_pdf)
+                    if apoderado and getattr(apoderado, "email", None):
+                        msg = f"DIPLOMA DE EXCELENCIA\n\nEstimado apoderado, felicitamos a {alumno.nombres} por lograr el puesto {puesto} con promedio {mat.promedio_final}."
+                        if not enviar_correo_seguro(getattr(apoderado, "email", "no-reply@test.com"), "Diploma de Mérito Académico", msg, attachment_path=signed_url): failed_emails += 1
+                        
+                else:
+                    # Mailing - Reporte regular
+                    if apoderado and getattr(apoderado, "email", None):
+                        if mat.estado_final == "Aprobado":
+                            msg = f"REPORTE ACADÉMICO\n\nEstimado apoderado, le informamos que {alumno.nombres} ha aprobado el año satisfactoriamente con promedio de {mat.promedio_final}."
+                        elif mat.estado_final == "Recuperacion":
+                            msg = f"REPORTE ACADÉMICO\n\nEstimado apoderado, le informamos que {alumno.nombres} deberá llevar curso de recuperación vacacional (Promedio: {mat.promedio_final})."
+                        else:
+                            msg = f"REPORTE ACADÉMICO\n\nEstimado apoderado, lamentamos informar que {alumno.nombres} repite de año (Promedio: {mat.promedio_final})."
+                        if not enviar_correo_seguro(getattr(apoderado, "email", "no-reply@test.com"), "Reporte Académico Final", msg): failed_emails += 1
+        
+        # CLONAR CURSOS AL NUEVO AÑO
+        for c in cursos_cerrados:
+            db.add(CursoDB(nombre=c.nombre, nivel=c.nivel, grado=c.grado, seccion=c.seccion, docente_id=None, anio_escolar_id=nuevo_anio.id))
+            
+        anio_activo.estado = "CERRADO"
+        anio_activo.fecha_cierre = ahora_lima().strftime("%Y-%m-%d")
+        
+        db.commit()
+        return {
+            "message": "Año escolar cerrado exitosamente.",
+            "evaluados": evaluados,
+            "status_counts": status_counts,
+            "certificates_generated": certificates_generated,
+            "failed_emails": failed_emails
+        }
+        
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error durante el cierre de año (Transacción revertida): {str(e)}")
 
 # ======================================================================
 # API MINEDU (Catálogo Curricular Nacional)
@@ -1944,6 +2437,9 @@ async def get_minedu_competencias(
     nivel: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     query = db.query(CompetenciaMINEDUDB)
     if curso:
         query = query.filter(CompetenciaMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
@@ -1957,6 +2453,9 @@ async def get_minedu_capacidades(
     competencia_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     query = db.query(CapacidadMINEDUDB)
     if competencia_id:
         query = query.filter(CapacidadMINEDUDB.competencia_id == competencia_id)
@@ -1970,6 +2469,9 @@ async def get_minedu_estandares(
     grado: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     query = db.query(EstandarMINEDUDB)
     if curso:
         query = query.filter(EstandarMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
@@ -1987,6 +2489,9 @@ async def get_minedu_desempenos(
     grado: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
     query = db.query(DesempenoMINEDUDB)
     if curso:
         query = query.filter(DesempenoMINEDUDB.curso_nombre.ilike(f"%{curso}%"))
@@ -1996,3 +2501,82 @@ async def get_minedu_desempenos(
         query = query.filter(DesempenoMINEDUDB.grado == grado)
     resultados = query.all()
     return [{"id": d.id, "nivel": d.nivel, "grado": d.grado, "curso_nombre": d.curso_nombre, "descripcion": d.descripcion} for d in resultados]
+
+
+@router.get("/padre/certificados")
+def get_certificados_padre(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
+    require_role(current_user, ["PADRE", "ADMIN"])
+    alumnos = db.query(AlumnoDB).filter(AlumnoDB.apoderado_id == current_user.id).all()
+    if not alumnos and current_user.role != "ADMIN":
+        return []
+    
+    alumno_ids = [a.id for a in alumnos]
+    
+    certificados = db.query(CertificadoDB).filter(CertificadoDB.alumno_id.in_(alumno_ids)).all()
+    
+    resultado = []
+    for cert in certificados:
+        alumno = db.query(AlumnoDB).filter(AlumnoDB.id == cert.alumno_id).first()
+        anio = db.query(AnioEscolarDB).filter(AnioEscolarDB.id == cert.anio_escolar_id).first()
+        resultado.append({
+            "id": cert.id,
+            "alumno_id": cert.alumno_id,
+            "alumno_nombre": f"{alumno.nombres}",
+            "tipo": cert.tipo,
+            "puesto": cert.puesto,
+            "fecha_generacion": cert.fecha_generacion,
+            "anio": anio.anio if anio else "Desconocido",
+            "url_descarga": f"/api/padre/certificados/{cert.id}/descargar"
+        })
+    return resultado
+
+@router.get("/padre/certificados/{certificado_id}/descargar")
+def descargar_certificado(certificado_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
+    require_role(current_user, ["PADRE", "ADMIN"])
+    
+    cert = db.query(CertificadoDB).filter(CertificadoDB.id == certificado_id).first()
+    if not cert:
+        raise HTTPException(status_code=404, detail="Certificado no encontrado")
+        
+    if current_user.role != "ADMIN":
+        alumno = db.query(AlumnoDB).filter(AlumnoDB.id == cert.alumno_id).first()
+        if not alumno or alumno.apoderado_id != current_user.id:
+            raise HTTPException(status_code=403, detail="No tienes permiso para ver este certificado")
+            
+    if not cert.ruta_archivo:
+        raise HTTPException(status_code=404, detail="El archivo del certificado no se encontró")
+
+    if getattr(cert, "storage_type", "LOCAL") == "CLOUDINARY":
+        import time
+        import cloudinary.utils
+        signed_url, _ = cloudinary.utils.cloudinary_url(
+            cert.ruta_archivo,
+            resource_type="raw",
+            type="authenticated",
+            sign_url=True,
+            expires_at=int(time.time()) + 600 # 10 mins de validez
+        )
+        return {"url": signed_url}
+        
+    if not os.path.exists(cert.ruta_archivo):
+        raise HTTPException(status_code=404, detail="El archivo físico del certificado no se encontró")
+        
+    return FileResponse(path=cert.ruta_archivo, filename=os.path.basename(cert.ruta_archivo), media_type="application/pdf")
+
+
+class PagarMatriculaPadreReq(BaseModel):
+    alumno_id: int
+
+@router.post("/padre/matricular")
+async def padre_matricular(req: PagarMatriculaPadreReq, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["ALUMNO_PADRE"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+    if not anio_activo:
+        raise HTTPException(status_code=400, detail="No hay año escolar activo.")
+        
+    matricula = db.query(MatriculaDB).filter(MatriculaDB.alumno_id == req.alumno_id, MatriculaDB.anio_escolar_id == anio_activo.id).first()
+    if not matricula or matricula.estado_matricula != "PENDIENTE_PAGO":
+        raise HTTPException(status_code=400, detail="La matrícula no está pendiente de pago.")
+        
+    matricula.estado_matricula = "CONFIRMADA"
+    db.commit()
+    return {"message": "Matrícula confirmada exitosamente."}

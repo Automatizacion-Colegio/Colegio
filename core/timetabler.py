@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from models.database import CursoDB, HorarioDB, TutorDB, DocenteEspecialidadDB, UserDB
+from models.database import CursoDB, HorarioDB, TutorDB, DocenteEspecialidadDB, AnioEscolarDB, UserDB
 import random
 import logging
 from collections import defaultdict
@@ -19,18 +19,20 @@ BLOQUES = [
 
 
 def _get_docentes_con_especialidad(db: Session, curso_nombre: str, nivel: str) -> list:
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     """
     Retorna lista de docente_id que tienen especialización en (curso_nombre, nivel).
     Solo acepta PRIMARIA o SECUNDARIA — no existe nivel AMBOS.
     """
-    esps = db.query(DocenteEspecialidadDB).filter(
-        DocenteEspecialidadDB.curso_nombre == curso_nombre,
-        DocenteEspecialidadDB.nivel == nivel.upper()
+    esps = db.query(DocenteEspecialidadDB, AnioEscolarDB).filter(
+        DocenteEspecialidadDB, AnioEscolarDB.curso_nombre == curso_nombre,
+        DocenteEspecialidadDB, AnioEscolarDB.nivel == nivel.upper()
     ).all()
     return [e.docente_id for e in esps]
 
 
 def generate_timetables(db: Session, target_nivel: str = None) -> dict:
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
     """
     Genera horarios para todas las aulas (o solo el nivel indicado).
     Asigna docentes ÚNICAMENTE si tienen la especialización correspondiente.
@@ -38,15 +40,15 @@ def generate_timetables(db: Session, target_nivel: str = None) -> dict:
     """
     # Borrar horarios existentes
     if target_nivel:
-        db.query(HorarioDB).filter(HorarioDB.nivel == target_nivel).delete()
+        db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(HorarioDB.nivel == target_nivel).delete()
     else:
-        db.query(HorarioDB).delete()
+        db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).delete()
     db.commit()
 
     if target_nivel:
-        cursos_db = db.query(CursoDB).filter(CursoDB.nivel == target_nivel).all()
+        cursos_db = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.nivel == target_nivel).all()
     else:
-        cursos_db = db.query(CursoDB).all()
+        cursos_db = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
 
     if not cursos_db:
         return {"conflictos_resueltos": True, "bloques_libres": 0, "advertencias": []}
@@ -57,6 +59,10 @@ def generate_timetables(db: Session, target_nivel: str = None) -> dict:
     for c in cursos_db:
         key = (c.nivel, c.grado, c.seccion)
         cursos_por_aula.setdefault(key, []).append(c)
+
+    # Obtener tutores
+    tutores_db = db.query(TutorDB).filter(TutorDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
+    tutor_por_aula = {(t.nivel, t.grado, t.seccion): t.docente_id for t in tutores_db}
 
     # Pre-computar: (curso_nombre, nivel) → [docente_id, ...] con especialización
     combinaciones_unicas = {(c.nombre, c.nivel) for c in cursos_db}
@@ -70,10 +76,22 @@ def generate_timetables(db: Session, target_nivel: str = None) -> dict:
     for aula in aulas:
         nivel, grado, seccion = aula
         for c in cursos_por_aula[aula]:
-            docs = docentes_por_curso.get((c.nombre, nivel), [])
+            es_tutoria = "tutoría" in c.nombre.lower() or "tutoria" in c.nombre.lower()
+            is_special = any(x in c.nombre.lower() for x in ["inglés", "educación física", "religión"])
+            
+            if es_tutoria:
+                docs = [tutor_por_aula.get(aula)] if tutor_por_aula.get(aula) else []
+            elif nivel == "PRIMARIA" and not is_special:
+                docs = [tutor_por_aula.get(aula)] if tutor_por_aula.get(aula) else []
+            else:
+                docs = docentes_por_curso.get((c.nombre, nivel), [])
+                
             if not docs:
-                msg = (f"SIN DOCENTE ESPECIALIZADO: '{c.nombre}' para "
-                       f"{grado}° {seccion} de {nivel}")
+                if es_tutoria or (nivel == "PRIMARIA" and not is_special):
+                    msg = f"SIN TUTOR ASIGNADO: '{c.nombre}' para {grado}° {seccion} de {nivel}"
+                else:
+                    msg = (f"SIN DOCENTE ESPECIALIZADO: '{c.nombre}' para "
+                           f"{grado}° {seccion} de {nivel}")
                 if msg not in advertencias_previas:
                     advertencias_previas.append(msg)
                     logger.warning(f"Timetabler ⚠️  {msg}")
@@ -141,7 +159,22 @@ def generate_timetables(db: Session, target_nivel: str = None) -> dict:
                         if requerimientos[aula][c.id] <= 0:
                             continue
 
-                        docs_habilitados = docentes_por_curso.get((c.nombre, nivel), [])
+                        es_tutoria = "tutoría" in c.nombre.lower() or "tutoria" in c.nombre.lower()
+                        is_special = any(x in c.nombre.lower() for x in ["inglés", "educación física", "religión"])
+                        
+                        if es_tutoria:
+                            tutor_id = tutor_por_aula.get(aula)
+                            if not tutor_id:
+                                continue
+                            docs_habilitados = [tutor_id]
+                        elif nivel == "PRIMARIA" and not is_special:
+                            tutor_id = tutor_por_aula.get(aula)
+                            if not tutor_id:
+                                continue
+                            docs_habilitados = [tutor_id]
+                        else:
+                            docs_habilitados = docentes_por_curso.get((c.nombre, nivel), [])
+
                         if not docs_habilitados:
                             continue  # ya advertido arriba
 
@@ -157,7 +190,7 @@ def generate_timetables(db: Session, target_nivel: str = None) -> dict:
                         adv = (f"Bloque libre: {grado}°{seccion} {nivel} "
                                f"{dia} {hora_inicio}")
                         advertencias_intento.append(adv)
-                        horarios_temporales.append(HorarioDB(
+                        horarios_temporales.append(HorarioDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
                             nivel=nivel, grado=grado, seccion=seccion,
                             dia=dia, hora_inicio=hora_inicio, hora_fin=hora_fin,
                             curso_id=None, docente_id=None
@@ -184,7 +217,7 @@ def generate_timetables(db: Session, target_nivel: str = None) -> dict:
                     ocupacion_docentes[(docente_sel, d_idx, b_idx)] = True
                     horas_docente[docente_sel] += 1
 
-                    horarios_temporales.append(HorarioDB(
+                    horarios_temporales.append(HorarioDB(anio_escolar_id=anio_activo.id if anio_activo else None, 
                         nivel=nivel, grado=grado, seccion=seccion,
                         dia=dia, hora_inicio=hora_inicio, hora_fin=hora_fin,
                         curso_id=curso_sel.id,

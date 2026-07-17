@@ -46,6 +46,60 @@ def calcular_pago(context_variables, nivel: str) -> str:
         return f"El costo de matrícula para nivel Secundaria es de S/ {config['secundaria']:.2f}."
     return f"Nivel no reconocido. Los costos son: Primaria (S/ {config['primaria']:.2f}) y Secundaria (S/ {config['secundaria']:.2f})."
 
+def calcular_pago_recuperacion(context_variables, nivel: str) -> str:
+    """Calcula el pago de los cursos de recuperación de verano según el nivel (Primaria o Secundaria)."""
+    from models.database import SessionLocal, ConfiguracionGlobalDB
+    db = SessionLocal()
+    try:
+        config = db.query(ConfiguracionGlobalDB).first()
+        if not config:
+            return "Error: No hay configuración de precios en el sistema."
+            
+        precio = config.precio_recuperacion_primaria if nivel.upper() == "PRIMARIA" else config.precio_recuperacion_secundaria
+        return f"El costo por CADA curso de recuperación de verano en nivel {nivel.capitalize()} es de S/ {precio:.2f}."
+    except Exception as e:
+        return f"Error al consultar el precio: {e}"
+    finally:
+        db.close()
+
+def reservar_cupo_admision(context_variables, dni_alumno: str, nivel: str) -> str:
+    """Intenta reservar un cupo por 10 minutos para un alumno nuevo, verificando la capacidad física de las aulas."""
+    from core.utils import redis_client
+    from models.database import SessionLocal, ConfiguracionGlobalDB, MatriculaDB, AnioEscolarDB
+    
+    db = SessionLocal()
+    try:
+        anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+        if not anio_activo:
+            return "Error: No hay año escolar activo."
+            
+        config = db.query(ConfiguracionGlobalDB).first()
+        if not config:
+            return "Error: Configuración global no encontrada."
+            
+        cupo_max = config.cupos_primaria if nivel.upper() == "PRIMARIA" else config.cupos_secundaria
+            
+        ocupados_db = db.query(MatriculaDB).filter(MatriculaDB.anio_escolar_id == anio_activo.id, MatriculaDB.nivel == nivel.upper()).count()
+        
+        llaves_redis = redis_client.keys(f"lock:cupo:{nivel.upper()}:*")
+        ocupados_redis = len(llaves_redis)
+        
+        if (ocupados_db + ocupados_redis) >= cupo_max:
+            return f"Lo sentimos, no hay cupos disponibles para {nivel}. Se ha alcanzado el límite del aula."
+            
+        llave = f"lock:cupo:{nivel.upper()}:{dni_alumno}"
+        if redis_client.exists(llave):
+            ttl = redis_client.ttl(llave)
+            return f"Ya tienes un cupo reservado. Te quedan {ttl // 60} minutos para pagar la matrícula."
+            
+        redis_client.setex(llave, 600, "reservado")
+        return "¡Cupo reservado temporalmente! Tienes exactamente 10 minutos para completar el pago. De lo contrario, liberarémos la vacante."
+    except Exception as e:
+        return f"Ocurrió un error al intentar reservar el cupo: {e}"
+    finally:
+        db.close()
+
+
 # Funciones de transferencia (Handoffs)
 def transferir_a_psicologo():
     """Deriva al usuario al Agente Psicólogo para temas de conducta, disciplina o bienestar estudiantil."""
@@ -182,9 +236,11 @@ ag_admin = Agent(
         "  4. Con ese código se realiza el pago de matrícula (usa calcular_pago para indicar el monto exacto).\n"
         "  5. El alumno queda oficialmente matriculado.\n"
         "NOTA: Conducta 'C' o promedio muy bajo puede requerir una cita con Psicología antes de la matrícula.\n"
-        "Recuerda que NO estamos cobrando pensiones por el momento, solo matrículas."
+        "Recuerda que NO estamos cobrando pensiones por el momento, solo matrículas.\n"
+        "Para alumnos NUEVOS que solicitan matrícula, DEBES ejecutar la herramienta `reservar_cupo_admision` antes de enviarles a pagar. Esto garantizará su cupo por 10 minutos.\n"
+        "Si te preguntan por pagos de CURSOS DE VERANO o RECUPERACIÓN, usa la herramienta `calcular_pago_recuperacion` para decirles el costo."
     ),
-    functions=[calcular_pago, transferir_a_soporte],
+    functions=[calcular_pago, reservar_cupo_admision, calcular_pago_recuperacion, transferir_a_soporte],
     model="openai/gpt-oss-20b",
     tool_choice="auto"
 )

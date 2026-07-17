@@ -3,8 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from core.utils import ahora_lima
+from core.certificados import generar_certificado_pdf
 from sqlalchemy.orm import Session
-from models.database import get_db, CajaDiariaDB, TransaccionDB, AlumnoDB, AdmisionDB
+from models.database import get_db, CajaDiariaDB, TransaccionDB, AlumnoDB, AdmisionDB, CursoRecuperacionDB, MatriculaDB, CursoDB, AnioEscolarDB, UserDB, CertificadoDB
 from core.antigravity import school_db
 from auth.security import get_current_user, TokenData, require_role
 from langchain_groq import ChatGroq
@@ -30,7 +32,7 @@ class TransaccionReq(BaseModel):
 @router.post("/caja/abrir")
 async def abrir_caja(req: AbrirCajaReq, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO"]))):
     # Verify no open register exists for today
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    hoy = ahora_lima().strftime("%Y-%m-%d")
     caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == hoy, CajaDiariaDB.estado == "Abierta").first()
     if caja:
         raise HTTPException(status_code=400, detail="Ya hay una caja abierta para hoy.")
@@ -49,7 +51,7 @@ async def abrir_caja(req: AbrirCajaReq, db: Session = Depends(get_db), current_u
 
 @router.get("/caja/estado")
 async def estado_caja(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    hoy = ahora_lima().strftime("%Y-%m-%d")
     caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == hoy, CajaDiariaDB.estado == "Abierta").first()
     if not caja:
         return {"estado": "Cerrada", "caja": None, "transacciones": []}
@@ -59,7 +61,7 @@ async def estado_caja(db: Session = Depends(get_db), current_user: TokenData = D
 
 @router.post("/caja/transaccion")
 async def registrar_transaccion(req: TransaccionReq, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO"]))):
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    hoy = ahora_lima().strftime("%Y-%m-%d")
     caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == hoy, CajaDiariaDB.estado == "Abierta").first()
     if not caja:
         raise HTTPException(status_code=400, detail="Debes abrir caja primero.")
@@ -70,7 +72,7 @@ async def registrar_transaccion(req: TransaccionReq, db: Session = Depends(get_d
         concepto=req.concepto,
         metodo=req.metodo,
         alumno_id=req.alumno_id,
-        fecha_hora=datetime.now().strftime("%H:%M:%S")
+        fecha_hora=ahora_lima().strftime("%H:%M:%S")
     )
     db.add(tx)
     caja.recaudado_sistema += req.monto
@@ -80,7 +82,7 @@ async def registrar_transaccion(req: TransaccionReq, db: Session = Depends(get_d
 
 @router.post("/caja/cerrar")
 async def cerrar_caja(req: CierreCajaReq, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO"]))):
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    hoy = ahora_lima().strftime("%Y-%m-%d")
     caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == hoy, CajaDiariaDB.estado == "Abierta").first()
     if not caja:
         raise HTTPException(status_code=400, detail="No hay caja abierta para cerrar.")
@@ -225,7 +227,6 @@ async def listar_admisiones(
         "codigo_est": a.codigo_est, 
         "nombres": f"{a.nombres} {a.apellidos}", 
         "nivel": a.nivel, 
-        "grado": a.grado, 
         "promedio": a.promedio, 
         "conducta": a.conducta, 
         "estado_proceso": a.estado_proceso
@@ -252,3 +253,209 @@ async def cambiar_estado_admision(
         await school_db.set_state(mem_state)
 
     return {"message": f"Estado de admisión cambiado a {estado} exitosamente."}
+
+
+
+
+
+@router.get("/alumnos/recuperacion")
+async def obtener_alumnos_recuperacion(db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    if not anio_activo:
+        raise HTTPException(status_code=400, detail="No hay año escolar activo.")
+        
+    matriculas = db.query(MatriculaDB).filter(MatriculaDB.anio_escolar_id == anio_activo.id, MatriculaDB.estado_matricula == "PENDIENTE_RECUPERACION").all()
+    resultado = []
+    for mat in matriculas:
+        alumno = db.query(AlumnoDB).filter(AlumnoDB.id == mat.alumno_id).first()
+        if not alumno: continue
+        
+        # Encontrar los cursos a recuperar (en la matricula del año a recuperar, es decir, la matricula actual en estado pendiente_recuperacion)
+        # La forma segura es buscar los CursoRecuperacionDB pendientes asociados a la matricula del año pasado
+        # Ah, espera, CursoRecuperacionDB se inserta en cierre_escolar con matricula_id = matricula CERRADA del año anterior.
+        # Así que buscamos las matrículas del alumno y todos los CursoRecuperacionDB pendientes.
+        cursos_rec = db.query(CursoRecuperacionDB).join(MatriculaDB).filter(
+            MatriculaDB.alumno_id == alumno.id,
+            CursoRecuperacionDB.estado == "PENDIENTE"
+        ).all()
+        
+        cursos_detalle = []
+        for cr in cursos_rec:
+            cinfo = db.query(CursoDB).filter(CursoDB.id == cr.curso_id).first()
+            if cinfo:
+                cursos_detalle.append({
+                    "curso_recuperacion_id": cr.id,
+                    "nombre": cinfo.nombre
+                })
+                
+        if len(cursos_detalle) > 0:
+            resultado.append({
+                "alumno_id": alumno.id,
+                "alumno_nombres": f"{alumno.nombres}",
+                "grado": mat.grado,
+                "nivel": mat.nivel,
+                "cursos_pendientes": cursos_detalle
+            })
+    return resultado
+
+@router.get("/matriculas/pendientes")
+async def obtener_matricula_pendiente(dni: str, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
+    alumno = db.query(AlumnoDB).filter(AlumnoDB.dni == dni).first()
+    if not alumno:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado.")
+        
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    if not anio_activo:
+        raise HTTPException(status_code=400, detail="No hay año escolar activo.")
+        
+    matricula = db.query(MatriculaDB).filter(MatriculaDB.alumno_id == alumno.id, MatriculaDB.anio_escolar_id == anio_activo.id).first()
+    
+    if not matricula or matricula.estado_matricula != "PENDIENTE_PAGO":
+        raise HTTPException(status_code=400, detail="El alumno no tiene matrícula pendiente de pago para el año activo.")
+        
+    return {
+        "id": matricula.id,
+        "alumno_id": alumno.id,
+        "alumno_nombre": f"{alumno.nombres}",
+        "grado": matricula.grado,
+        "nivel": matricula.nivel,
+        "estado_matricula": matricula.estado_matricula,
+        "monto_total": 350.0
+    }
+
+class MatricularSecretariaReq(BaseModel):
+    alumno_id: int
+    metodo_pago: str
+    monto_pago: float
+
+@router.post("/matricular")
+async def secretaria_matricular(req: MatricularSecretariaReq, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
+    caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == ahora_lima().strftime("%Y-%m-%d"), CajaDiariaDB.estado == "ABIERTA").first()
+    if not caja:
+        raise HTTPException(status_code=400, detail="Debe abrir la caja diaria de hoy primero.")
+        
+    anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+    if not anio_activo:
+        raise HTTPException(status_code=400, detail="No hay año escolar activo.")
+        
+    matricula = db.query(MatriculaDB).filter(MatriculaDB.alumno_id == req.alumno_id, MatriculaDB.anio_escolar_id == anio_activo.id).first()
+    if not matricula or matricula.estado_matricula != "PENDIENTE_PAGO":
+        raise HTTPException(status_code=400, detail="La matrícula no está pendiente de pago.")
+        
+    alumno = db.query(AlumnoDB).filter(AlumnoDB.id == req.alumno_id).first()
+    
+    try:
+        matricula.estado_matricula = "CONFIRMADA"
+        
+        # Registrar Transaccion
+        transaccion = TransaccionDB(
+            caja_id=caja.id,
+            monto=req.monto_pago,
+            concepto=f"Pago Matrícula {anio_activo.anio} - {alumno.nombres}",
+            metodo=req.metodo_pago,
+            alumno_id=req.alumno_id,
+            fecha_hora=ahora_lima().strftime("%Y-%m-%d %H:%M:%S"),
+            aprobado=True
+        )
+        db.add(transaccion)
+        
+        db.commit()
+        return {"message": "Matrícula confirmada y pago registrado exitosamente."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RecuperacionResult(BaseModel):
+    curso_recuperacion_id: int
+    nota: str # "A", "15", etc.
+    aprobado: bool
+    metodo_pago: str # "Efectivo", "Yape", "Transferencia"
+    monto_pago: float
+
+@router.post("/recuperacion/registrar")
+async def registrar_recuperacion(req: RecuperacionResult, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
+    # Validar caja abierta
+    caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == ahora_lima().strftime("%Y-%m-%d"), CajaDiariaDB.estado == "ABIERTA").first()
+    if not caja:
+        raise HTTPException(status_code=400, detail="Debe abrir la caja diaria de hoy primero.")
+        
+    curso_rec = db.query(CursoRecuperacionDB).filter(CursoRecuperacionDB.id == req.curso_recuperacion_id).first()
+    if not curso_rec:
+        raise HTTPException(status_code=404, detail="Registro de recuperación no encontrado.")
+        
+    if curso_rec.estado != "PENDIENTE":
+        raise HTTPException(status_code=400, detail=f"El curso ya fue procesado con estado {curso_rec.estado}.")
+
+    matricula_cerrada = db.query(MatriculaDB).filter(MatriculaDB.id == curso_rec.matricula_id).first()
+    curso_info = db.query(CursoDB).filter(CursoDB.id == curso_rec.curso_id).first()
+    
+    try:
+        # 1. Actualizar estado del curso de recuperación
+        curso_rec.nota_recuperacion = req.nota
+        curso_rec.estado = "APROBADO" if req.aprobado else "JALADO"
+        
+        # 2. Registrar Transacción
+        transaccion = TransaccionDB(
+            caja_id=caja.id,
+            monto=req.monto_pago,
+            concepto=f"Recuperación - {curso_info.nombre} ({matricula_cerrada.nivel} {matricula_cerrada.grado})",
+            metodo=req.metodo_pago,
+            alumno_id=matricula_cerrada.alumno_id,
+            fecha_hora=ahora_lima().strftime("%Y-%m-%d %H:%M:%S"),
+            aprobado=True
+        )
+        db.add(transaccion)
+        db.flush()
+        
+        # 3. Evaluar si ya terminó todos sus cursos de recuperación
+        todos_cursos = db.query(CursoRecuperacionDB).filter(CursoRecuperacionDB.matricula_id == matricula_cerrada.id).all()
+        
+        pendientes = [c for c in todos_cursos if c.estado == "PENDIENTE"]
+        
+        if len(pendientes) == 0:
+            # Ya terminó todas sus recuperaciones
+            jalados = [c for c in todos_cursos if c.estado == "JALADO"]
+            
+            anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first()
+            matricula_nueva = db.query(MatriculaDB).filter(MatriculaDB.alumno_id == matricula_cerrada.alumno_id, MatriculaDB.anio_escolar_id == anio_activo.id).first()
+            alumno = db.query(AlumnoDB).filter(AlumnoDB.id == matricula_cerrada.alumno_id).first()
+            
+            if len(jalados) > 0:
+                # JALÓ AL MENOS UNO -> REVIERTE A REPITENTE (Mismo grado que el año cerrado)
+                matricula_nueva.estado_matricula = "PENDIENTE_PAGO"
+                matricula_nueva.nivel = matricula_cerrada.nivel # REVERSIÓN DE GRADO/NIVEL (Cubre caso 6to Primaria o 5to Secu)
+                matricula_nueva.grado = matricula_cerrada.grado
+            else:
+                # APROBÓ TODOS
+                if matricula_cerrada.nivel == "SECUNDARIA" and matricula_cerrada.grado == 5:
+                    # CASO 5TO SECUNDARIA RECUPERA Y APRUEBA
+                    alumno.estado = "EGRESADO"
+                    if alumno.apoderado_id:
+                        apoderado = db.query(UserDB).filter(UserDB.id == alumno.apoderado_id).first()
+                        if apoderado:
+                            apoderado.is_active = False
+                            apoderado.motivo_inactivo = "EGRESADO"
+                            
+                    ruta_pdf = generar_certificado_pdf(db, matricula_cerrada, anio_activo, "CONCLUSION_SECUNDARIA")
+                    db.add(CertificadoDB(
+                        alumno_id=alumno.id, 
+                        anio_escolar_id=matricula_cerrada.anio_escolar_id, 
+                        tipo="CONCLUSION_SECUNDARIA",
+                        ruta_archivo=ruta_pdf,
+                        fecha_generacion=ahora_lima().strftime("%Y-%m-%d")
+                    ))
+                    
+                    # Eliminar la matricula nueva (porque ya egresó y no sigue estudiando)
+                    if matricula_nueva:
+                        db.delete(matricula_nueva)
+                else:
+                    # CASO REGULAR (Sigue al siguiente grado de forma normal)
+                    matricula_nueva.estado_matricula = "PENDIENTE_PAGO"
+
+        db.commit()
+        return {"message": "Recuperación y pago registrados exitosamente."}
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error registrando recuperación: {str(e)}")
