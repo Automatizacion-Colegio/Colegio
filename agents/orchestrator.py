@@ -514,6 +514,37 @@ class ColegioOrchestrator:
                 }
                 del estado["observed_students"][codigo_obs]
                 await self.memory.set_state(estado)
+                
+                # ENVIAR CORREO AL APODERADO CON EL CÓDIGO DE ESTUDIANTE
+                ap_correo = alumno.get("ap_correo")
+                if ap_correo:
+                    try:
+                        import smtplib
+                        from email.mime.text import MIMEText
+                        from email.mime.multipart import MIMEMultipart
+                        import os
+                        
+                        app_password = os.getenv("SMTP_PASSWORD")
+                        sender_email = "iep.josemariaarguedas.1998@gmail.com"
+                        
+                        msg = MIMEMultipart()
+                        msg['From'] = sender_email
+                        msg['To'] = ap_correo
+                        msg['Subject'] = "RESULTADO DE EVALUACIÓN PSICOLÓGICA - I.E.P. José María Arguedas"
+                        
+                        monto = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
+                        cuerpo = f"Estimado apoderado de {alumno['nombres']},\n\nNos complace informarle que la evaluación psicológica ha sido favorable y el estudiante ha sido ADMITIDO.\n\nPara completar la matrícula, debe realizar el pago de la cuota de S/ {monto}.\nSu Código de Estudiante para realizar el pago en el chat es: {codigo_est}\n\nPor favor, regrese al chat de admisión, escriba 'Quiero pagar mi matrícula' y proporcione su código {codigo_est}.\n\nAtentamente,\nDepartamento de Psicología."
+                        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+                        
+                        if app_password:
+                            server = smtplib.SMTP('smtp.gmail.com', 587)
+                            server.starttls()
+                            server.login(sender_email, app_password)
+                            server.send_message(msg)
+                            server.quit()
+                    except Exception as e:
+                        print("Error enviando correo de aprobacion psicologica:", e)
+
                 return {"status": "aprobado", "codigo_est": codigo_est, "mensaje": f"Aprobado. Obs: {observacion}"}
             else:
                 if admision:
