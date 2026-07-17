@@ -599,13 +599,48 @@ class ColegioOrchestrator:
         estado["enrolled_students"][pago.codigo_est] = alumno
         await self.memory.set_state(estado)
         
-        # Persistir el cambio de estado en AdmisionDB
-        from models.database import SessionLocal, AdmisionDB
+        # Persistir el cambio de estado en AdmisionDB e insertar en AlumnoDB
+        from models.database import SessionLocal, AdmisionDB, AlumnoDB, MatriculaDB, AnioEscolarDB
         db = SessionLocal()
         try:
             adm = db.query(AdmisionDB).filter(AdmisionDB.codigo_est == pago.codigo_est).first()
             if adm:
                 adm.estado_proceso = "Matriculado"
+                
+                # Crear el registro real del alumno
+                alumno_existente = db.query(AlumnoDB).filter(AlumnoDB.dni == adm.dni).first()
+                if not alumno_existente:
+                    nuevo_alumno = AlumnoDB(
+                        codigo_est=pago.codigo_est,
+                        dni=adm.dni,
+                        nombres=f"{adm.nombres} {adm.apellidos}",
+                        nivel=adm.nivel,
+                        grado=adm.grado,
+                        estado="Matriculado"
+                    )
+                    db.add(nuevo_alumno)
+                    db.flush() # Para obtener el ID del alumno
+                    alumno_id = nuevo_alumno.id
+                else:
+                    alumno_id = alumno_existente.id
+                
+                # Crear registro de matricula
+                anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
+                if anio_activo:
+                    matricula_existente = db.query(MatriculaDB).filter(
+                        MatriculaDB.alumno_id == alumno_id, 
+                        MatriculaDB.anio_escolar_id == anio_activo.id
+                    ).first()
+                    if not matricula_existente:
+                        nueva_matricula = MatriculaDB(
+                            alumno_id=alumno_id,
+                            anio_escolar_id=anio_activo.id,
+                            nivel=adm.nivel,
+                            grado=adm.grado,
+                            estado_matricula="CONFIRMADA"
+                        )
+                        db.add(nueva_matricula)
+                        
                 db.commit()
         finally:
             db.close()
