@@ -24,9 +24,9 @@ def _get_docentes_con_especialidad(db: Session, curso_nombre: str, nivel: str) -
     Retorna lista de docente_id que tienen especialización en (curso_nombre, nivel).
     Solo acepta PRIMARIA o SECUNDARIA — no existe nivel AMBOS.
     """
-    esps = db.query(DocenteEspecialidadDB, AnioEscolarDB).filter(
-        DocenteEspecialidadDB, AnioEscolarDB.curso_nombre == curso_nombre,
-        DocenteEspecialidadDB, AnioEscolarDB.nivel == nivel.upper()
+    esps = db.query(DocenteEspecialidadDB).filter(
+        DocenteEspecialidadDB.curso_nombre == curso_nombre,
+        DocenteEspecialidadDB.nivel == nivel.upper()
     ).all()
     return [e.docente_id for e in esps]
 

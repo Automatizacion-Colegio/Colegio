@@ -1863,7 +1863,7 @@ async def create_user(
     # Insertar especializaciones si es DOCENTE
     if user.role == "DOCENTE" and user.especializaciones:
         for esp in user.especializaciones:
-            nueva_esp = DocenteEspecialidadDB, AnioEscolarDB, MatriculaDB, CertificadoDB, CursoRecuperacionDB(
+            nueva_esp = DocenteEspecialidadDB(
                 docente_id=new_user.id,
                 curso_nombre=esp["curso_nombre"].strip(),
                 nivel=esp["nivel"].strip().upper()
