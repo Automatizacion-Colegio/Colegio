@@ -261,6 +261,7 @@ Cada invocación LLM o cadena LangChain se registra en **LangSmith** para:
 | **Framework Web** | FastAPI 0.109+ | API REST + SSE Streaming |
 | **Servidor ASGI** | Uvicorn | Servidor de producción |
 | **Base de Datos SQL** | PostgreSQL (Neon) | Datos transaccionales |
+| **Migraciones de BD** | Alembic | Control de versiones del esquema SQL |
 | **ORM** | SQLAlchemy 2.0 | Mapeo objeto-relacional |
 | **Base de Datos Vectorial** | pgvector + langchain-postgres | Embeddings RAG |
 | **Orquestación IA** | LangGraph + LangChain | Grafos de agentes y cadenas |
@@ -272,8 +273,9 @@ Cada invocación LLM o cadena LangChain se registra en **LangSmith** para:
 | **Cola de Tareas** | Celery + Redis | Tareas asíncronas en background |
 | **OCR** | Pytesseract + Pillow | Lectura de documentos médicos y vouchers |
 | **Seguridad / Auth** | Python-jose + Passlib + bcrypt | JWT + RBAC |
+| **Testing** | Pytest + Flake8 | Pruebas unitarias e integración en CI |
 | **Despliegue** | Google Cloud Run | Serverless con auto-scaling |
-| **CI/CD** | GitHub Actions | Deploy automático en push a `main` |
+| **CI/CD** | GitHub Actions | Test + Deploy automático en push a `main` |
 
 ---
 
@@ -316,6 +318,7 @@ Como parte del proceso de mejora continua, se realizó una auditoría completa d
 3. **Especialización de Docentes:** Se implementó restricción estricta de especialidad y nivel (PRIMARIA/SECUNDARIA) en la creación de docentes, integrando esta validación dinámicamente en el algoritmo del `timetabler.py`.
 4. **Seguridad y Control de Roles Cruzados (IDOR Fix):** Se parcheó una vulnerabilidad IDOR en `/vocational-advisor` garantizando que un padre (`ALUMNO_PADRE`) solo pueda procesar análisis basados en las notas de sus propios hijos. Se verificó que todos los endpoints de *Deep Agents* tengan `Depends(require_role(...))` estricto.
 5. **Limpieza UI e Integridad de BD:** Se eliminó la exposición cruda de la memoria del LLM (Raw JSON) del dashboard administrativo y se purgó la base de datos de registros huérfanos producto de pruebas sin persistencia.
+6. **Migraciones y CI/CD (Agosto 2026):** Se implementó `Alembic` para el control de versiones seguro de las tablas, protegiendo explícitamente los *vector stores* de LangChain. Se unificó el pipeline de GitHub Actions introduciendo una capa de testing estricto (`pytest` + `flake8` sobre un contenedor `pgvector` temporal) que frena el pase a producción si se detecta cualquier falla técnica.
 
 ---
 
@@ -326,6 +329,7 @@ Como parte del proceso de mejora continua, se realizó una auditoría completa d
 | `Token` | `/token` | Login y generación de JWT |
 | `API General` | `/api` | Alumnos, notas, asistencia, citas, cursos, MINEDU |
 | `Secretaría` | `/api/secretaria` | Caja, admisiones, OCR de vouchers |
+| `Padres/Apoderados` | `/api/padre` | Encuesta de ratificación de vacantes, matrículas y apoderados |
 | `Deep Agents` | `/api/deep-agents` | IA pesada: sílabos, exámenes, BI, psicólogo |
 
 
@@ -398,14 +402,19 @@ cp .env.example .env
 # Edita .env con tus credenciales
 ```
 
-### 5. Levantar el servidor
+### 5. Ejecutar migraciones (Alembic)
+```bash
+alembic upgrade head
+```
+
+### 6. Levantar el servidor
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-> Al iniciar por primera vez se crean automáticamente las tablas y usuarios base: `admin/admin123`, `docente1/doc123`, `psico1/psico123`, `padre1/padre123`, `secretario1/sec123`.
+> Al iniciar por primera vez, Alembic se encarga de estructurar las tablas (`ConfiguracionGlobalDB`, `PadreFamiliarDB`, etc.).
 
-### 6. Documentación interactiva
+### 7. Documentación interactiva
 ```
 http://localhost:8000/docs
 ```
@@ -416,10 +425,15 @@ http://localhost:8000/docs
 
 ```text
 Push a main
-  └─▶ Build Docker Image
-        └─▶ Push a Google Artifact Registry
-              └─▶ Deploy a Cloud Run
-                    └─▶ Inyección de Secrets desde GitHub Secrets
+  └─▶ GitHub Actions (deploy.yml)
+        ├─▶ 🧪 Validar y Testear Código
+        │     ├─▶ Linting (flake8)
+        │     └─▶ Pytest (Levanta un contenedor local de pgvector)
+        │           [Si falla, se aborta el despliegue a GCP]
+        └─▶ 🚀 Desplegar a Cloud Run
+              └─▶ Build Docker Image
+                    └─▶ Push a Google Artifact Registry
+                          └─▶ Cloud Run Deploy
 ```
 
 ---
@@ -430,7 +444,9 @@ Push a main
 backend/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml             # CI/CD → Google Cloud Run
+│       └── deploy.yml             # CI/CD: Flake8 + Pytest → Google Cloud Run
+│
+├── alembic/                       # 🗄️ Migraciones de BD (Revisiones SQL)
 │
 ├── agents/                        # 🤖 IA: LangGraph + Swarm MCP
 │   ├── orchestrator.py            # Grafo principal + Redis Semantic Cache
@@ -459,7 +475,7 @@ backend/
 ├── schemas/
 │   └── mcp.py                     # Pydantic schemas
 │
-├── test/                          # Scripts de prueba locales (ignorados en Git)
+├── tests/                         # 🧪 Pruebas automatizadas (Pytest de API y BD)
 ├── Dockerfile
 ├── main.py                        # Entry point FastAPI + Lifespan + Middlewares
 ├── requirements.txt
