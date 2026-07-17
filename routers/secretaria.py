@@ -459,3 +459,116 @@ async def registrar_recuperacion(req: RecuperacionResult, db: Session = Depends(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error registrando recuperación: {str(e)}")
+from pydantic import BaseModel
+class MatriculaDirectaRequest(BaseModel):
+    nombres: str
+    apellidos: str
+    dni: str
+    nivel: str
+    grado: int
+    seccion: str = "A"
+    ap_nombre: str
+    ap_dni: str
+    ap_correo: str
+    ap_telefono: str
+    metodo: str
+    monto: float
+    efectivoRecibido: str = ""
+
+@router.post("/matricula_directa")
+async def matricula_directa(req: MatriculaDirectaRequest, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
+    try:
+        # Registrar ingreso en caja
+        nueva_tx = CajaTransaccionDB(
+            monto=req.monto,
+            concepto=f"Matrícula Directa - {req.nombres} {req.apellidos}",
+            metodo=req.metodo,
+            usuario_id=current_user.username
+        )
+        db.add(nueva_tx)
+
+        # Crear alumno
+        import random
+        codigo_est = f"EST-{random.randint(1000, 9999)}-DIR"
+        nuevo_alumno = AlumnoDB(
+            codigo_est=codigo_est,
+            dni=req.dni,
+            nombres=req.nombres,
+            apellidos=req.apellidos,
+            nivel=req.nivel,
+            grado=req.grado,
+            seccion=req.seccion,
+            estado="Matriculado"
+        )
+        db.add(nuevo_alumno)
+        db.flush()
+
+        # Crear admision para registro
+        nueva_admision = AdmisionDB(
+            codigo_est=codigo_est,
+            dni=req.dni,
+            nombres=req.nombres,
+            apellidos=req.apellidos,
+            nivel=req.nivel,
+            grado=req.grado,
+            ap_nombre=req.ap_nombre,
+            ap_correo=req.ap_correo,
+            ap_telefono=req.ap_telefono,
+            estado_proceso="Matriculado"
+        )
+        db.add(nueva_admision)
+
+        db.commit()
+        return {"message": "Matrícula directa registrada exitosamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+class CobroRequest(BaseModel):
+    monto: float
+    metodo: str
+
+@router.post("/admisiones/{id}/cobrar")
+async def cobrar_admision(id: int, req: CobroRequest, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
+    try:
+        admision = db.query(AdmisionDB).filter(AdmisionDB.id == id).first()
+        if not admision:
+            raise HTTPException(status_code=404, detail="Admisión no encontrada")
+
+        if admision.estado_proceso == "Matriculado":
+            raise HTTPException(status_code=400, detail="El alumno ya está matriculado")
+
+        # Registrar ingreso en caja
+        nueva_tx = CajaTransaccionDB(
+            monto=req.monto,
+            concepto=f"Cobro Admisión/Matrícula - {admision.nombres} {admision.apellidos}",
+            metodo=req.metodo,
+            usuario_id=current_user.username,
+            alumno_id=None
+        )
+        db.add(nueva_tx)
+
+        admision.estado_proceso = "Matriculado"
+        
+        # Crear en AlumnoDB
+        alumno_existente = db.query(AlumnoDB).filter(AlumnoDB.codigo_est == admision.codigo_est).first()
+        if not alumno_existente:
+            nuevo_alumno = AlumnoDB(
+                codigo_est=admision.codigo_est,
+                dni=admision.dni,
+                nombres=admision.nombres,
+                apellidos=admision.apellidos,
+                nivel=admision.nivel,
+                grado=admision.grado,
+                seccion="A",
+                estado="Matriculado"
+            )
+            db.add(nuevo_alumno)
+        else:
+            alumno_existente.estado = "Matriculado"
+
+        db.commit()
+        return {"message": "Cobro registrado exitosamente, alumno matriculado"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
