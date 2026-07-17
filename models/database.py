@@ -314,14 +314,17 @@ class EmailLogDB(Base):
 def init_db():
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-        # Ejecutar las actualizaciones de esquema para columnas nuevas de CitaDB
+        # Ejecutar las actualizaciones de esquema para columnas nuevas
         try:
             conn.execute(text("ALTER TABLE citas ADD COLUMN IF NOT EXISTS codigo_obs VARCHAR;"))
             conn.execute(text("ALTER TABLE citas ADD COLUMN IF NOT EXISTS dni_postulante VARCHAR;"))
             conn.execute(text("ALTER TABLE citas ADD COLUMN IF NOT EXISTS psicologo_id INTEGER REFERENCES users(id);"))
             conn.execute(text("ALTER TABLE citas ADD COLUMN IF NOT EXISTS informe VARCHAR;"))
+            
+            conn.execute(text("ALTER TABLE admisiones ADD COLUMN IF NOT EXISTS promedio FLOAT;"))
+            conn.execute(text("ALTER TABLE admisiones ADD COLUMN IF NOT EXISTS conducta VARCHAR;"))
         except Exception as e:
-            print(f"Nota: No se pudieron actualizar las columnas de citas: {e}")
+            print(f"Nota: No se pudieron actualizar las columnas: {e}")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     
