@@ -81,8 +81,8 @@
        │                │                │                         │
        ▼                ▼                ▼                         ▼
   Neon (PgSQL)        Redis          LLMs API                  Cloudinary
-  + pgvector     Cache + Celery     Groq / Gemini              Imágenes y
-  (RAG Store)    Broker/Backend     LangSmith Traces           Vouchers OCR
+  + pgvector     Cache + Celery     Groq / Gemini              PDFs y
+  (RAG Store)    Broker/Backend     LangSmith Traces           Certificados
 ```
 
 ---
@@ -271,7 +271,7 @@ Cada invocación LLM o cadena LangChain se registra en **LangSmith** para:
 | **Trazabilidad IA** | LangSmith | Monitoreo de agentes en producción |
 | **Caché Semántica** | Redis (redis.asyncio) | Ahorro de tokens en FAQs frecuentes |
 | **Cola de Tareas** | Celery + Redis | Tareas asíncronas en background |
-| **Almacenamiento de Imágenes** | Cloudinary | CDN y hosting para fotos, vouchers y firmas |
+| **Almacenamiento en Nube** | Cloudinary | CDN y hosting seguro para PDFs, constancias y certificados generados |
 | **OCR** | Pytesseract + Pillow | Lectura de documentos médicos y vouchers |
 | **Seguridad / Auth** | Python-jose + Passlib + bcrypt | JWT + RBAC |
 | **Testing** | Pytest + Flake8 | Pruebas unitarias e integración en CI |
