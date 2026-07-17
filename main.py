@@ -52,20 +52,32 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://colegio-frontend-zeta.vercel.a
 # Ejecuta la inicialización de BD y usuarios de prueba al arrancar el servidor.
 # ---------------------------------------------------------------------------
 def _startup_sync():
-    init_db()
-    db = SessionLocal()
-    if not db.query(UserDB).filter(UserDB.username == "admin").first():
-        db.add(UserDB(username="admin", hashed_password=get_password_hash("admin123"), role="ADMIN", nombre_completo="Administrador Sistema"))
-        db.add(UserDB(username="docente1", hashed_password=get_password_hash("doc123"), role="DOCENTE", nombre_completo="Docente Prueba"))
-        db.add(UserDB(username="psico1", hashed_password=get_password_hash("psico123"), role="PSICOLOGO", nombre_completo="Psicologo Prueba"))
-        db.add(UserDB(username="padre1", hashed_password=get_password_hash("padre123"), role="ALUMNO_PADRE", nombre_completo="Padre Prueba"))
-        db.add(UserDB(username="secretario1", hashed_password=get_password_hash("sec123"), role="SECRETARIO", nombre_completo="Secretario Prueba"))
-        db.commit()
-        
-    if not db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first():
-        db.add(AnioEscolarDB(anio=2026, estado="ACTIVO"))
-        db.commit()
-    db.close()
+    try:
+        init_db()
+        db = SessionLocal()
+        try:
+            if not db.query(UserDB).filter(UserDB.username == "admin").first():
+                db.add(UserDB(username="admin", hashed_password=get_password_hash("admin123"), role="ADMIN", nombre_completo="Administrador Sistema"))
+                db.add(UserDB(username="docente1", hashed_password=get_password_hash("doc123"), role="DOCENTE", nombre_completo="Docente Prueba"))
+                db.add(UserDB(username="psico1", hashed_password=get_password_hash("psico123"), role="PSICOLOGO", nombre_completo="Psicologo Prueba"))
+                db.add(UserDB(username="padre1", hashed_password=get_password_hash("padre123"), role="ALUMNO_PADRE", nombre_completo="Padre Prueba"))
+                db.add(UserDB(username="secretario1", hashed_password=get_password_hash("sec123"), role="SECRETARIO", nombre_completo="Secretario Prueba"))
+                db.commit()
+                
+            if not db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == "ACTIVO").first():
+                existing = db.query(AnioEscolarDB).filter(AnioEscolarDB.anio == 2026).first()
+                if not existing:
+                    db.add(AnioEscolarDB(anio=2026, estado="ACTIVO"))
+                else:
+                    existing.estado = "ACTIVO"
+                db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error seeding database: {e}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Database init failed: {e}")
 
 
 @asynccontextmanager
