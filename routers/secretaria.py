@@ -478,12 +478,17 @@ class MatriculaDirectaRequest(BaseModel):
 @router.post("/matricula_directa")
 async def matricula_directa(req: MatriculaDirectaRequest, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
     try:
+        hoy = ahora_lima().strftime("%Y-%m-%d")
+        caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == hoy, CajaDiariaDB.estado == "Abierta").first()
+        if not caja:
+            raise HTTPException(status_code=400, detail="Debes abrir caja primero antes de registrar un cobro.")
+
         # Registrar ingreso en caja
         nueva_tx = TransaccionDB(
+            caja_id=caja.id,
             monto=req.monto,
             concepto=f"Matrícula Directa - {req.nombres} {req.apellidos}",
-            metodo=req.metodo,
-            usuario_id=current_user.username
+            metodo=req.metodo
         )
         db.add(nueva_tx)
 
@@ -538,12 +543,17 @@ async def cobrar_admision(id: int, req: CobroRequest, db: Session = Depends(get_
         if admision.estado_proceso == "Matriculado":
             raise HTTPException(status_code=400, detail="El alumno ya está matriculado")
 
+        hoy = ahora_lima().strftime("%Y-%m-%d")
+        caja = db.query(CajaDiariaDB).filter(CajaDiariaDB.fecha == hoy, CajaDiariaDB.estado == "Abierta").first()
+        if not caja:
+            raise HTTPException(status_code=400, detail="Debes abrir caja primero antes de registrar un cobro.")
+
         # Registrar ingreso en caja
         nueva_tx = TransaccionDB(
+            caja_id=caja.id,
             monto=req.monto,
             concepto=f"Cobro Admisión/Matrícula - {admision.nombres} {admision.apellidos}",
             metodo=req.metodo,
-            usuario_id=current_user.username,
             alumno_id=None
         )
         db.add(nueva_tx)
