@@ -291,12 +291,22 @@ class ColegioOrchestrator:
         try:
             if tipo == "OBS":
                 db_count = db.query(CitaDB).filter(CitaDB.codigo_obs.isnot(None)).count()
-                return f"OBS-2026-{db_count + 1:03d}"
+                while True:
+                    codigo = f"OBS-2026-{db_count + 1:03d}"
+                    if not db.query(CitaDB).filter(CitaDB.codigo_obs == codigo).first():
+                        return codigo
+                    db_count += 1
             else:
                 db_count_alu = db.query(AlumnoDB).filter(AlumnoDB.nivel == extra).count()
                 db_count_adm = db.query(AdmisionDB).filter(AdmisionDB.nivel == extra).count()
                 db_count = max(db_count_alu, db_count_adm)
-                return f"EST-2026-{extra[:3].upper()}-{db_count + 1:03d}"
+                while True:
+                    codigo = f"EST-2026-{extra[:3].upper()}-{db_count + 1:03d}"
+                    existe_alu = db.query(AlumnoDB).filter(AlumnoDB.codigo_est == codigo).first()
+                    existe_adm = db.query(AdmisionDB).filter(AdmisionDB.codigo_est == codigo).first()
+                    if not existe_alu and not existe_adm:
+                        return codigo
+                    db_count += 1
         except Exception as e:
             print(f"Error generando código: {e}")
             return f"{tipo}-2026-{extra[:3].upper()}-{count + 1:03d}"
