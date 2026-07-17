@@ -465,6 +465,9 @@ class ColegioOrchestrator:
                 return {"status": status_ret, "citas": citas_disponibles, "mensaje": mensaje, "codigo_est": codigo_est}
             else:
                 return {"status": status_ret, "codigo_est": codigo_est, "mensaje": mensaje}
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
         finally:
             db.close()
 
@@ -498,6 +501,9 @@ class ColegioOrchestrator:
             self._enviar_correo_admision(data.expediente.ap_correo, "Cita Psicológica Confirmada - I.E.P. José María Arguedas", cuerpo_cita)
 
             return {"status": "agendado", "codigo_obs": codigo_obs, "mensaje": "Cita confirmada en BD y código generado."}
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Error al agendar cita: {str(e)}")
         finally:
             db.close()
 

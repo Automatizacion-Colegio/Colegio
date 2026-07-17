@@ -485,6 +485,14 @@ async def matricula_directa(req: MatriculaDirectaRequest, db: Session = Depends(
         if not caja:
             raise HTTPException(status_code=400, detail="Debes abrir caja primero antes de registrar un cobro.")
 
+        # Validación IA de riesgo psicológico
+        admision_previa = db.query(AdmisionDB).filter(AdmisionDB.dni == req.dni).first()
+        if admision_previa and admision_previa.estado_proceso == "Requiere Cita Psicológica":
+            raise HTTPException(status_code=400, detail="El alumno tiene un expediente online con cita psicológica pendiente. No se puede matricular directamente.")
+            
+        if (req.conducta == "B" and req.promedio < 14) or req.conducta == "C":
+            raise HTTPException(status_code=400, detail="El perfil del estudiante ingresado (Promedio/Conducta) requiere una evaluación psicológica. Por favor derivar al Portal de Admisión online para evaluación.")
+
         # Registrar ingreso en caja
         nueva_tx = TransaccionDB(
             caja_id=caja.id,

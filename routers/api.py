@@ -1192,7 +1192,15 @@ async def get_docente_cursos(
     anio_activo = db.query(AnioEscolarDB).filter(AnioEscolarDB.estado == 'ACTIVO').first()
     if not anio_activo:
         raise HTTPException(status_code=409, detail="No hay año escolar activo. Por favor, asegúrese de completar el cierre y apertura de año.")
-    return db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.docente_id == current_user.user_id).all()
+    
+    cursos_titular = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(CursoDB.docente_id == current_user.user_id).all()
+    
+    horarios = db.query(HorarioDB).filter(HorarioDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).filter(HorarioDB.docente_id == current_user.user_id).all()
+    cursos_horario_ids = list(set([h.curso_id for h in horarios if h.curso_id is not None]))
+    cursos_horario = db.query(CursoDB).filter(CursoDB.id.in_(cursos_horario_ids)).all() if cursos_horario_ids else []
+    
+    todos_cursos = {c.id: c for c in cursos_titular + cursos_horario}
+    return list(todos_cursos.values())
 
 @router.get("/docente/tutorias")
 async def get_docente_tutorias(
@@ -1713,7 +1721,7 @@ async def get_state(
 
     # RECONSTRUIR observed_students desde CitaDB y AdmisionDB
     from models.database import AdmisionDB
-    citas_admision = db.query(CitaDB).filter(CitaDB.motivo == "Admisión", CitaDB.estado == "Pendiente").all()
+    citas_admision = db.query(CitaDB).filter(CitaDB.motivo.in_(["Admisión", "Admision"]), CitaDB.estado == "Pendiente").all()
     observed_dict = {}
     for c in citas_admision:
         adm = db.query(AdmisionDB).filter(AdmisionDB.dni == c.dni_postulante).first()
