@@ -479,7 +479,7 @@ class MatriculaDirectaRequest(BaseModel):
 async def matricula_directa(req: MatriculaDirectaRequest, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role(["SECRETARIO", "ADMIN"]))):
     try:
         # Registrar ingreso en caja
-        nueva_tx = CajaTransaccionDB(
+        nueva_tx = TransaccionDB(
             monto=req.monto,
             concepto=f"Matrícula Directa - {req.nombres} {req.apellidos}",
             metodo=req.metodo,
@@ -539,7 +539,7 @@ async def cobrar_admision(id: int, req: CobroRequest, db: Session = Depends(get_
             raise HTTPException(status_code=400, detail="El alumno ya está matriculado")
 
         # Registrar ingreso en caja
-        nueva_tx = CajaTransaccionDB(
+        nueva_tx = TransaccionDB(
             monto=req.monto,
             concepto=f"Cobro Admisión/Matrícula - {admision.nombres} {admision.apellidos}",
             metodo=req.metodo,
