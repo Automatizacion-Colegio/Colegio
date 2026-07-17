@@ -59,8 +59,9 @@ jobs:
           GROQ_API_KEY: "dummy"
           OPENAI_API_KEY: "dummy"
           LANGCHAIN_API_KEY: "dummy"
+          PYTHONPATH: "."
         run: |
-          pytest tests/
+          python -m pytest tests/
 
   deploy:
     name: 🚀 Desplegar a Cloud Run
