@@ -324,6 +324,15 @@ def init_db():
             print(f"Nota: No se pudieron actualizar las columnas de citas: {e}")
         conn.commit()
     Base.metadata.create_all(bind=engine)
+    
+    # Limpiar cursos huérfanos
+    try:
+        db = SessionLocal()
+        db.execute(text("UPDATE cursos SET docente_id = NULL WHERE docente_id IS NOT NULL AND docente_id NOT IN (SELECT id FROM users)"))
+        db.commit()
+        db.close()
+    except Exception as e:
+        print(f"Nota: No se pudo limpiar cursos huérfanos: {e}")
 
 def get_db():
     db = SessionLocal()
