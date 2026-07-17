@@ -462,10 +462,6 @@ class ColegioOrchestrator:
                 if not citas_disponibles:
                     raise HTTPException(status_code=400, detail="No hay citas psicológicas disponibles.")
                     
-                # ENVIAR CORREO DE CITA PSICOLOGICA
-                cuerpo_cita = f"Estimado(a) padre/madre de familia,\n\nLe informamos que hemos recibido la solicitud de vacante para el estudiante {expediente.nombres} {expediente.apellidos}.\n\nTras la revisión de los documentos, se ha determinado que es necesaria una entrevista presencial con nuestro departamento de psicología.\n\nMotivo: El perfil del estudiante (Notas: {expediente.promedio}, Conducta: {expediente.conducta}) requiere una entrevista psicológica y compromiso firmado antes de la matrícula.\n\nPara agendar su cita, por favor haga clic en el siguiente botón y elija el horario que mejor se le acomode en el portal. El sistema le mostrará únicamente los espacios disponibles en tiempo real:\n\n[AGENDAR ENTREVISTA AQUÍ]\n\nNota: Una vez seleccionado el horario, el cupo quedará reservado automáticamente.\n\nAtentamente,\nDepartamento de Admisión"
-                self._enviar_correo_admision(expediente.ap_correo, "Requiere Entrevista Psicológica - I.E.P. José María Arguedas", cuerpo_cita)
-                
                 return {"status": status_ret, "citas": citas_disponibles, "mensaje": mensaje, "codigo_est": codigo_est}
             else:
                 return {"status": status_ret, "codigo_est": codigo_est, "mensaje": mensaje}
@@ -497,6 +493,9 @@ class ColegioOrchestrator:
             )
             db.add(nueva_cita)
             db.commit()
+
+            cuerpo_cita = f"Estimado(a) padre/madre de familia,\n\nLe informamos que su cita con el departamento de psicología para el estudiante {data.expediente.nombres} {data.expediente.apellidos} se agendó con éxito.\n\nHorario elegido: {data.dia} a las {data.hora}\nCódigo de Observación: {codigo_obs}\n\nPor favor, sea puntual y asista con el estudiante.\n\nAtentamente,\nDepartamento de Admisión"
+            self._enviar_correo_admision(data.expediente.ap_correo, "Cita Psicológica Confirmada - I.E.P. José María Arguedas", cuerpo_cita)
 
             return {"status": "agendado", "codigo_obs": codigo_obs, "mensaje": "Cita confirmada en BD y código generado."}
         finally:

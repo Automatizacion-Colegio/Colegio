@@ -1690,6 +1690,25 @@ async def get_state(
         for al in db_students
     }
 
+    # RECONSTRUIR observed_students desde CitaDB y AdmisionDB
+    from models.database import AdmisionDB
+    citas_admision = db.query(CitaDB).filter(CitaDB.motivo == "Admisión", CitaDB.estado == "Pendiente").all()
+    observed_dict = {}
+    for c in citas_admision:
+        adm = db.query(AdmisionDB).filter(AdmisionDB.dni == c.dni_postulante).first()
+        if adm:
+            observed_dict[c.codigo_obs] = {
+                "dni": adm.dni,
+                "nombres": f"{adm.nombres} {adm.apellidos}",
+                "nivel": adm.nivel,
+                "grado": adm.grado,
+                "datos_originales": {
+                    "promedio": adm.promedio,
+                    "conducta": adm.conducta
+                }
+            }
+    state["observed_students"] = observed_dict
+
     # RECONSTRUIR notas_trimestrales desde NotaDB
     notas_db = db.query(NotaDB).filter(NotaDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
     cursos_db = db.query(CursoDB).filter(CursoDB.anio_escolar_id == (anio_activo.id if anio_activo else None)).all()
