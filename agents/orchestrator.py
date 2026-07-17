@@ -286,14 +286,16 @@ class ColegioOrchestrator:
                 print(f"Log correo fallido guardado: {error_msg}")
 
     def generar_codigo(self, tipo: str, count: int, extra: str = "") -> str:
-        from models.database import SessionLocal, AlumnoDB, CitaDB
+        from models.database import SessionLocal, AlumnoDB, CitaDB, AdmisionDB
         db = SessionLocal()
         try:
             if tipo == "OBS":
                 db_count = db.query(CitaDB).filter(CitaDB.codigo_obs.isnot(None)).count()
                 return f"OBS-2026-{db_count + 1:03d}"
             else:
-                db_count = db.query(AlumnoDB).filter(AlumnoDB.nivel == extra).count()
+                db_count_alu = db.query(AlumnoDB).filter(AlumnoDB.nivel == extra).count()
+                db_count_adm = db.query(AdmisionDB).filter(AdmisionDB.nivel == extra).count()
+                db_count = max(db_count_alu, db_count_adm)
                 return f"EST-2026-{extra[:3].upper()}-{db_count + 1:03d}"
         except Exception as e:
             print(f"Error generando código: {e}")
