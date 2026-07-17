@@ -25,6 +25,8 @@ load_dotenv(".env")
 # Forzar a que lea la URL de base de datos desde el .env
 url = os.getenv("DATABASE_URL")
 if url:
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
     config.set_main_option("sqlalchemy.url", url)
 
 from models.database import Base
