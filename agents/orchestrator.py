@@ -235,10 +235,35 @@ swarm_client.get_chat_completion = patched_get_chat_completion
 
 
 class ColegioOrchestrator:
-    def __init__(self, memory: SharedMemory, bus: EventBus, graph: AgentGraph):
-        self.memory = memory
-        self.bus = bus
-        self.graph = graph
+    def __init__(self):
+        self.memory = JSONStateMemory()
+        
+    def _enviar_correo_admision(self, destinatario: str, asunto: str, cuerpo: str):
+        if not destinatario: return
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            import os
+            
+            app_password = os.getenv("SMTP_PASSWORD")
+            sender_email = "iep.josemariaarguedas.1998@gmail.com"
+            
+            if not app_password: return
+            
+            msg = MIMEMultipart()
+            msg['From'] = sender_email
+            msg['To'] = destinatario
+            msg['Subject'] = asunto
+            msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+            
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(sender_email, app_password)
+            server.send_message(msg)
+            server.quit()
+        except Exception as e:
+            print(f"Error enviando correo a {destinatario}: {e}")
 
     def generar_codigo(self, tipo: str, count: int, extra: str = "") -> str:
         from models.database import SessionLocal, AlumnoDB
@@ -416,6 +441,11 @@ class ColegioOrchestrator:
                 citas_disponibles = [c for c in estado["calendario_psicologia"] if not c["ocupado"]]
                 if not citas_disponibles:
                     raise HTTPException(status_code=400, detail="No hay citas psicológicas disponibles.")
+                    
+                # ENVIAR CORREO DE CITA PSICOLOGICA
+                cuerpo_cita = f"Estimado(a) padre/madre de familia,\n\nLe informamos que hemos recibido la solicitud de vacante para el estudiante {expediente.nombres} {expediente.apellidos}.\n\nTras la revisión de los documentos, se ha determinado que es necesaria una entrevista presencial con nuestro departamento de psicología.\n\nMotivo: El perfil del estudiante (Notas: {expediente.promedio}, Conducta: {expediente.conducta}) requiere una entrevista psicológica y compromiso firmado antes de la matrícula.\n\nPara agendar su cita, por favor haga clic en el siguiente botón y elija el horario que mejor se le acomode en el portal. El sistema le mostrará únicamente los espacios disponibles en tiempo real:\n\n[AGENDAR ENTREVISTA AQUÍ]\n\nNota: Una vez seleccionado el horario, el cupo quedará reservado automáticamente.\n\nAtentamente,\nDepartamento de Admisión"
+                self._enviar_correo_admision(expediente.ap_correo, "Requiere Entrevista Psicológica - I.E.P. José María Arguedas", cuerpo_cita)
+                
                 return {"status": status_ret, "citas": citas_disponibles, "mensaje": mensaje, "codigo_est": codigo_est}
             else:
                 return {"status": status_ret, "codigo_est": codigo_est, "mensaje": mensaje}
@@ -515,35 +545,11 @@ class ColegioOrchestrator:
                 del estado["observed_students"][codigo_obs]
                 await self.memory.set_state(estado)
                 
-                # ENVIAR CORREO AL APODERADO CON EL CÓDIGO DE ESTUDIANTE
+                # ENVIAR CORREO DE APROBACION AL APODERADO
                 ap_correo = alumno.get("ap_correo")
-                if ap_correo:
-                    try:
-                        import smtplib
-                        from email.mime.text import MIMEText
-                        from email.mime.multipart import MIMEMultipart
-                        import os
-                        
-                        app_password = os.getenv("SMTP_PASSWORD")
-                        sender_email = "iep.josemariaarguedas.1998@gmail.com"
-                        
-                        msg = MIMEMultipart()
-                        msg['From'] = sender_email
-                        msg['To'] = ap_correo
-                        msg['Subject'] = "RESULTADO DE EVALUACIÓN PSICOLÓGICA - I.E.P. José María Arguedas"
-                        
-                        monto = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
-                        cuerpo = f"Estimado apoderado de {alumno['nombres']},\n\nNos complace informarle que la evaluación psicológica ha sido favorable y el estudiante ha sido ADMITIDO.\n\nPara completar la matrícula, debe realizar el pago de la cuota de S/ {monto}.\nSu Código de Estudiante para realizar el pago en el chat es: {codigo_est}\n\nPor favor, regrese al chat de admisión, escriba 'Quiero pagar mi matrícula' y proporcione su código {codigo_est}.\n\nAtentamente,\nDepartamento de Psicología."
-                        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
-                        
-                        if app_password:
-                            server = smtplib.SMTP('smtp.gmail.com', 587)
-                            server.starttls()
-                            server.login(sender_email, app_password)
-                            server.send_message(msg)
-                            server.quit()
-                    except Exception as e:
-                        print("Error enviando correo de aprobacion psicologica:", e)
+                monto = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
+                cuerpo_aprobado = f"Estimado apoderado de {alumno['nombres']},\n\nNos complace informarle que la evaluación psicológica ha sido favorable y el estudiante ha sido ADMITIDO.\n\nPara completar la matrícula, debe realizar el pago de la cuota de S/ {monto}.\nSu Código de Estudiante para realizar el pago en el chat es: {codigo_est}\n\nPor favor, regrese al chat de admisión, escriba 'Quiero pagar mi matrícula' y proporcione su código {codigo_est}.\n\nAtentamente,\nDepartamento de Psicología."
+                self._enviar_correo_admision(ap_correo, "RESULTADO DE EVALUACIÓN PSICOLÓGICA - ADMITIDO", cuerpo_aprobado)
 
                 return {"status": "aprobado", "codigo_est": codigo_est, "mensaje": f"Aprobado. Obs: {observacion}"}
             else:
@@ -562,6 +568,12 @@ class ColegioOrchestrator:
                 }
                 del estado["observed_students"][codigo_obs]
                 await self.memory.set_state(estado)
+                
+                # ENVIAR CORREO DE RECHAZO
+                ap_correo = alumno.get("ap_correo")
+                cuerpo_rechazo = f"Estimado(a) padre de familia,\n\nNos dirigimos a usted para agradecerle sinceramente el interés mostrado en que su hijo(a), {alumno['nombres']}, forme parte de nuestra comunidad educativa.\n\nComo es de su conocimiento, nuestro proceso de matrícula incluye una evaluación psicopedagógica y conductual exhaustiva. Este procedimiento nos permite asegurar que nuestra metodología y entorno sean los más adecuados para el desarrollo integral de cada estudiante, así como para mantener la armonía de nuestra comunidad.\n\nTras una cuidadosa revisión de los resultados obtenidos por nuestro Departamento de Psicología, lamentamos informarle que no podremos proceder con la aceptación de la matrícula para el presente periodo académico.\n\nEsta decisión ha sido tomada priorizando el bienestar mutuo y reconociendo que, en esta etapa, el perfil conductual evaluado requiere un acompañamiento o entorno diferente al que nuestra institución puede brindar actualmente.\n\nEntendemos que esta noticia puede ser difícil. Si desea agendar una reunión privada con nuestra área de psicología para recibir una retroalimentación detallada sobre la evaluación de su menor hijo(a), por favor responda a este correo.\n\nAtentamente,\n\nComité de Admisión y Psicología"
+                self._enviar_correo_admision(ap_correo, "RESULTADO DE EVALUACIÓN PSICOLÓGICA - NO ADMITIDO", cuerpo_rechazo)
+                
                 return {"status": "rechazado", "mensaje": f"Rechazado. Motivo: {observacion}"}
         finally:
             db.close()
