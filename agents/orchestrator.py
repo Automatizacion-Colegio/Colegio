@@ -512,6 +512,7 @@ class ColegioOrchestrator:
         alumno = estado["observed_students"][codigo_obs]
 
         from models.database import SessionLocal, AdmisionDB, CitaDB
+        import logging
         db = SessionLocal()
         try:
             # 1. Actualizar CitaDB
@@ -548,7 +549,10 @@ class ColegioOrchestrator:
                 await self.memory.set_state(estado)
                 
                 # ENVIAR CORREO DE APROBACION AL APODERADO
-                ap_correo = alumno.get("ap_correo")
+                ap_correo = admision.ap_correo if admision else alumno.get("ap_correo")
+                if not ap_correo:
+                    logging.error(f"Error Crítico: No se pudo encontrar el correo del apoderado para el alumno {alumno.get('dni')}")
+                
                 monto = 500.0 if "primaria" in alumno["nivel"].lower() else 700.0
                 cuerpo_aprobado = f"Estimado apoderado de {alumno['nombres']},\n\nNos complace informarle que la evaluación psicológica ha sido favorable y el estudiante ha sido ADMITIDO.\n\nPara completar la matrícula, debe realizar el pago de la cuota de S/ {monto}.\nSu Código de Estudiante para realizar el pago en el chat es: {codigo_est}\n\nPor favor, regrese al chat de admisión, escriba 'Quiero pagar mi matrícula' y proporcione su código {codigo_est}.\n\nAtentamente,\nDepartamento de Psicología."
                 self._enviar_correo_admision(ap_correo, "RESULTADO DE EVALUACIÓN PSICOLÓGICA - ADMITIDO", cuerpo_aprobado)
@@ -572,7 +576,10 @@ class ColegioOrchestrator:
                 await self.memory.set_state(estado)
                 
                 # ENVIAR CORREO DE RECHAZO
-                ap_correo = alumno.get("ap_correo")
+                ap_correo = admision.ap_correo if admision else alumno.get("ap_correo")
+                if not ap_correo:
+                    logging.error(f"Error Crítico: No se pudo encontrar el correo del apoderado para el alumno {alumno.get('dni')}")
+                    
                 cuerpo_rechazo = f"Estimado(a) padre de familia,\n\nNos dirigimos a usted para agradecerle sinceramente el interés mostrado en que su hijo(a), {alumno['nombres']}, forme parte de nuestra comunidad educativa.\n\nComo es de su conocimiento, nuestro proceso de matrícula incluye una evaluación psicopedagógica y conductual exhaustiva. Este procedimiento nos permite asegurar que nuestra metodología y entorno sean los más adecuados para el desarrollo integral de cada estudiante, así como para mantener la armonía de nuestra comunidad.\n\nTras una cuidadosa revisión de los resultados obtenidos por nuestro Departamento de Psicología, lamentamos informarle que no podremos proceder con la aceptación de la matrícula para el presente periodo académico.\n\nEsta decisión ha sido tomada priorizando el bienestar mutuo y reconociendo que, en esta etapa, el perfil conductual evaluado requiere un acompañamiento o entorno diferente al que nuestra institución puede brindar actualmente.\n\nEntendemos que esta noticia puede ser difícil. Si desea agendar una reunión privada con nuestra área de psicología para recibir una retroalimentación detallada sobre la evaluación de su menor hijo(a), por favor responda a este correo.\n\nAtentamente,\n\nComité de Admisión y Psicología"
                 self._enviar_correo_admision(ap_correo, "RESULTADO DE EVALUACIÓN PSICOLÓGICA - NO ADMITIDO", cuerpo_rechazo)
                 
